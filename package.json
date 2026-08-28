@@ -1,0 +1,1 @@
+{"name":"baladatrade","version":"1.0.0","private":true,"description":"Diário de trading com gestão de risco e gamificação responsável","scripts":{"start":"node server.js","test":"node --test"},"engines":{"node":">=18"}}

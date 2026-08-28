@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="BaladaTrade: gestão de trades, risco e disciplina.">
+  <title>BaladaTrade — Disciplina vence impulso</title>
+  <meta name="theme-color" content="#092e23"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#"><span>BT</span> BaladaTrade</a>
+    <nav>
+      <button class="nav active" data-view="dashboard">◫ <span>Visão geral</span></button>
+      <button class="nav" data-view="journal">↗ <span>Diário de trades</span></button>
+      <button class="nav" data-view="missions">★ <span>Missões</span></button>
+      <button class="nav" data-view="risk">◇ <span>Gestão de risco</span></button>
+      <button class="nav" data-view="broker">⇄ <span>Binance</span></button>
+    </nav>
+    <div class="side-card"><small>SEQUÊNCIA DE DISCIPLINA</small><strong><b id="streakSide">0</b> dias</strong><p>Registre o plano antes do resultado.</p></div>
+    <p class="disclaimer">Ferramenta educacional. Não executa ordens nem oferece recomendação financeira.</p>
+  </aside>
+
+  <main>
+    <header><div><p class="eyebrow">CENTRAL DO TRADER</p><h1 id="viewTitle">Bom dia, trader.</h1><p class="muted">Seu processo vale mais que uma operação.</p></div><button class="primary" id="newTrade">+ Registrar trade</button></header>
+
+    <section id="dashboard" class="view active">
+      <div class="hero">
+        <div><span class="pill">NÍVEL <b id="level">1</b></span><h2>Construa consistência.<br><em>Um plano por vez.</em></h2><p>Ganhe XP seguindo regras de risco, documentando decisões e revisando resultados.</p></div>
+        <div class="level-card"><div class="level-ring"><span id="levelRing">1</span></div><div><small>PROGRESSO</small><strong><span id="xp">0</span> XP</strong><div class="bar"><i id="xpBar"></i></div><small id="nextLevel">100 XP para o nível 2</small></div></div>
+      </div>
+
+      <div class="metrics">
+        <article><small>RESULTADO LÍQUIDO</small><strong id="net">R$ 0,00</strong><span id="netHint">Nenhum trade registrado</span></article>
+        <article><small>TAXA DE ACERTO</small><strong id="winRate">0%</strong><span id="tradeCount">0 operações</span></article>
+        <article><small>PROFIT FACTOR</small><strong id="profitFactor">—</strong><span>Lucros ÷ perdas</span></article>
+        <article><small>DISCIPLINA</small><strong id="discipline">0%</strong><span>Regras respeitadas</span></article>
+      </div>
+
+      <div class="grid-main">
+        <article class="panel"><div class="panel-head"><div><small>CURVA DE CAPITAL</small><h3>Evolução dos resultados</h3></div><span class="tag">Dados locais</span></div><canvas id="equity" width="760" height="270"></canvas><div id="emptyChart" class="empty">Registre trades para formar sua curva.</div></article>
+        <article class="panel discipline-panel"><small>PLACAR DE PROCESSO</small><h3>Hoje você controla</h3><div class="score" id="score">0</div><p>pontos de disciplina</p><ul><li><i></i> Planejamento antes da entrada</li><li><i></i> Risco definido</li><li><i></i> Revisão pós-trade</li></ul></article>
+      </div>
+
+      <div class="grid-bottom">
+        <article class="panel"><div class="panel-head"><div><small>ÚLTIMAS OPERAÇÕES</small><h3>Diário recente</h3></div><button class="link" data-go="journal">Ver diário →</button></div><div id="recentTrades"></div></article>
+        <article class="panel"><div class="panel-head"><div><small>MISSÕES</small><h3>Próximos objetivos</h3></div><span id="missionCount" class="tag">0/3</span></div><div id="missionPreview"></div></article>
+      </div>
+    </section>
+
+    <section id="journal" class="view"><div class="section-head"><div><p class="eyebrow">DIÁRIO</p><h2>Suas decisões, sem desculpas.</h2></div><button class="primary open-modal">+ Novo trade</button></div><div class="panel table-wrap"><table><thead><tr><th>Data</th><th>Ativo</th><th>Mercado</th><th>Lado</th><th>Resultado</th><th>Risco</th><th>Plano?</th><th></th></tr></thead><tbody id="tradeTable"></tbody></table><div id="emptyTable" class="empty">Seu diário ainda está vazio.</div></div></section>
+
+    <section id="missions" class="view"><div class="section-head"><div><p class="eyebrow">GAMIFICAÇÃO RESPONSÁVEL</p><h2>XP por disciplina, nunca por excesso.</h2></div></div><div id="missionGrid" class="mission-grid"></div></section>
+
+    <section id="risk" class="view"><div class="section-head"><div><p class="eyebrow">CALCULADORA</p><h2>Defina a perda antes da entrada.</h2></div></div><div class="risk-grid"><form id="riskForm" class="panel form"><label>Capital da conta (R$)<input id="capital" type="number" value="10000" min="1" required></label><label>Risco por trade (%)<input id="riskPct" type="number" value="1" min="0.1" max="5" step="0.1" required></label><label>Preço de entrada<input id="entry" type="number" value="100" min="0.0001" step="any" required></label><label>Stop<input id="stop" type="number" value="98" min="0.0001" step="any" required></label><button class="primary" type="submit">Calcular posição</button></form><article class="panel risk-result"><small>RISCO MÁXIMO</small><strong id="maxRisk">R$ 100,00</strong><small>QUANTIDADE ESTIMADA</small><strong id="positionSize">50 unidades</strong><p>O cálculo não considera slippage, liquidez, impostos ou custos específicos.</p></article></div></section>
+    <section id="broker" class="view"><div class="section-head"><div><p class="eyebrow">CONEXÃO SEGURA</p><h2>Binance Spot</h2><p class="muted">Comece na Testnet. As chaves ficam somente no servidor.</p></div></div><div class="risk-grid"><article class="panel"><small>STATUS</small><h3 id="brokerStatus">Verificando…</h3><p id="brokerDetail" class="muted"></p><button class="secondary" id="checkBroker">Atualizar status</button></article><form id="orderForm" class="panel form"><span class="tag">ORDEM LIMIT · TESTE</span><label>Par<input id="orderSymbol" value="BTCUSDT" required></label><label>Lado<select id="orderSide"><option value="BUY">Comprar</option><option value="SELL">Vender</option></select></label><label>Quantidade<input id="orderQty" type="number" step="any" min="0" required></label><label>Preço<input id="orderPrice" type="number" step="any" min="0" required></label><button class="primary" type="submit">Validar ordem na Testnet</button><p id="orderResult" class="muted">Nenhuma ordem enviada.</p></form></div></section>
+  </main>
+
+  <dialog id="tradeModal"><form id="tradeForm" method="dialog"><div class="modal-head"><div><p class="eyebrow">NOVO REGISTRO</p><h2>Documente o trade</h2></div><button type="button" class="close">×</button></div><div class="form-grid"><label>Ativo<input name="asset" placeholder="Ex.: PETR4, WIN, BTC" required maxlength="20"></label><label>Mercado<select name="market"><option>Ações</option><option>Futuros</option><option>Cripto</option><option>Forex</option><option>Opções</option></select></label><label>Lado<select name="side"><option>Compra</option><option>Venda</option></select></label><label>Resultado líquido (R$)<input name="pnl" type="number" step="0.01" required></label><label>Risco planejado (R$)<input name="risk" type="number" min="0" step="0.01" required></label><label>Data<input name="date" type="date" required></label></div><label class="check"><input name="planned" type="checkbox"> Segui meu plano e respeitei o stop</label><label>Notas<textarea name="notes" placeholder="Contexto, entrada, saída e aprendizado"></textarea></label><div class="modal-actions"><button type="button" class="secondary close">Cancelar</button><button class="primary" value="default">Salvar trade + ganhar XP</button></div></form></dialog>
+  <script src="app.js"></script>
+</body></html>

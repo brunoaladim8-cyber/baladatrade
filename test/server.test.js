@@ -1,0 +1,3 @@
+const test=require('node:test');const assert=require('node:assert/strict');const http=require('node:http');const{handler}=require('../server');
+test('health endpoint responde ok',async()=>{const server=http.createServer(handler).listen(0);const port=server.address().port;const body=await fetch(`http://127.0.0.1:${port}/health`).then(r=>r.json());assert.equal(body.status,'ok');server.close()});
+test('página principal é servida',async()=>{const server=http.createServer(handler).listen(0);const port=server.address().port;const html=await fetch(`http://127.0.0.1:${port}/`).then(r=>r.text());assert.match(html,/BaladaTrade/);server.close()});

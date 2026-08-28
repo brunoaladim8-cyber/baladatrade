@@ -2,6 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {initDatabase,saveSnapshot,history}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -70,6 +71,24 @@ async function signedBinance(endpoint, method='GET', params={}) {
   return data;
 }
 
+async function portfolioSummary(){
+  const account=await signedBinance('/api/v3/account');
+  const response=await fetch(`${binanceConfig().base}/api/v3/ticker/24hr`);
+  if(!response.ok)throw new Error('Não foi possível consultar preços da Binance.');
+  const tickers=await response.json(),bySymbol=new Map(tickers.map(item=>[item.symbol,item]));
+  const stable=new Set(['USDT','USDC','FDUSD','TUSD']);
+  const assets=account.balances.map(balance=>({asset:balance.asset,quantity:Number(balance.free)+Number(balance.locked)})).filter(item=>item.quantity>0).map(item=>{
+    if(stable.has(item.asset))return {...item,price:1,value:item.quantity,changePct:0};
+    const ticker=bySymbol.get(`${item.asset}USDT`);if(!ticker)return null;
+    const price=Number(ticker.lastPrice),changePct=Number(ticker.priceChangePercent);
+    return {...item,price,value:item.quantity*price,changePct};
+  }).filter(Boolean).sort((a,b)=>b.value-a.value).slice(0,50);
+  const total=assets.reduce((sum,item)=>sum+item.value,0);
+  const previousTotal=assets.reduce((sum,item)=>sum+(item.value/(1+item.changePct/100)||item.value),0);
+  const changeValue=total-previousTotal,changePct=previousTotal?changeValue/previousTotal*100:0;
+  return {total,changeValue,changePct,assets,capturedAt:new Date().toISOString()};
+}
+
 async function api(req, res, pathname) {
   if (pathname === '/api/auth/session') return json(res, 200, {authenticated:authorized(req)});
   if (pathname === '/api/auth/login' && req.method === 'POST') {
@@ -92,6 +111,12 @@ async function api(req, res, pathname) {
       const account = await signedBinance('/api/v3/account');
       return json(res, 200, {balances:account.balances.filter(x=>Number(x.free)||Number(x.locked)), canTrade:account.canTrade});
     }
+    if (pathname === '/api/portfolio/refresh' && req.method === 'POST') {
+      const summary=await portfolioSummary();
+      const saved=await saveSnapshot(summary);
+      return json(res,200,{...summary,snapshotId:saved.id});
+    }
+    if (pathname === '/api/portfolio/history' && req.method === 'GET') return json(res,200,{history:await history(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||30))});
     if ((pathname === '/api/binance/order/test' || pathname === '/api/binance/order') && req.method === 'POST') {
       const order = await body(req);
       const symbol = String(order.symbol||'').toUpperCase();
@@ -130,5 +155,6 @@ if (require.main === module) {
   http.createServer(handler).listen(port, '0.0.0.0', () => {
     console.log(`BaladaTrade ativo na porta ${port}`);
   });
+  initDatabase().then(ok=>console.log(ok?'PostgreSQL conectado':'PostgreSQL não configurado')).catch(error=>console.error('Falha PostgreSQL:',error.message));
 }
 module.exports = {handler};

@@ -85,5 +85,10 @@ function handler(req, res) {
   });
 }
 
-if (require.main === module) http.createServer(handler).listen(process.env.PORT || 3000);
+if (require.main === module) {
+  const port = Number(process.env.PORT || 3000);
+  http.createServer(handler).listen(port, '0.0.0.0', () => {
+    console.log(`BaladaTrade ativo na porta ${port}`);
+  });
+}
 module.exports = {handler};

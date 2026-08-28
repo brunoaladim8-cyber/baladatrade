@@ -5,9 +5,17 @@
   <meta name="description" content="BaladaTrade: gestão de trades, risco e disciplina.">
   <title>BaladaTrade — Disciplina vence impulso</title>
   <meta name="theme-color" content="#092e23"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon.svg">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="auth.css">
 </head>
 <body>
+  <div id="authWall" class="auth-wall">
+    <form id="loginForm" class="login-card">
+      <span class="login-logo">BT</span><p class="eyebrow">ACESSO PRIVADO</p><h1>Entre no BaladaTrade</h1>
+      <p class="muted">Seu patrimônio e a conexão Binance ficam protegidos no servidor.</p>
+      <label>Senha<input id="loginPassword" type="password" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">Entrar com segurança</button><p id="loginError" class="negative"></p>
+    </form>
+  </div>
   <aside class="sidebar">
     <a class="brand" href="#"><span>BT</span> BaladaTrade</a>
     <nav>
@@ -22,7 +30,7 @@
   </aside>
 
   <main>
-    <header><div><p class="eyebrow">CENTRAL DO TRADER</p><h1 id="viewTitle">Bom dia, trader.</h1><p class="muted">Seu processo vale mais que uma operação.</p></div><button class="primary" id="newTrade">+ Registrar trade</button></header>
+    <header><div><p class="eyebrow">CENTRAL DO TRADER</p><h1 id="viewTitle">Bom dia, trader.</h1><p class="muted">Seu processo vale mais que uma operação.</p></div><div class="header-actions"><button class="secondary" id="logout">Sair</button><button class="primary" id="newTrade">+ Registrar trade</button></div></header>
 
     <section id="dashboard" class="view active">
       <div class="hero">

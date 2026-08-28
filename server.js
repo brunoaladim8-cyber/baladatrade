@@ -11,9 +11,36 @@ function json(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function parseCookies(req) {
+  return Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(value => {
+    const index = value.indexOf('=');
+    return [value.slice(0, index).trim(), decodeURIComponent(value.slice(index + 1))];
+  }));
+}
+
+function authSecret() {
+  return process.env.AUTH_SECRET || '';
+}
+
+function sign(value) {
+  return crypto.createHmac('sha256', authSecret()).update(value).digest('base64url');
+}
+
 function authorized(req) {
-  const expected = process.env.APP_TOKEN;
-  return !expected || req.headers.authorization === `Bearer ${expected}`;
+  if (!process.env.APP_PASSWORD || !authSecret()) return false;
+  const token = parseCookies(req).baladatrade_session;
+  if (!token) return false;
+  const [expires, signature] = token.split('.');
+  if (!expires || !signature || Number(expires) < Date.now()) return false;
+  const expected = sign(expires);
+  if (signature.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+}
+
+function passwordMatches(received) {
+  const expected = Buffer.from(process.env.APP_PASSWORD || '');
+  const actual = Buffer.from(String(received || ''));
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
 }
 
 async function body(req) {
@@ -44,6 +71,19 @@ async function signedBinance(endpoint, method='GET', params={}) {
 }
 
 async function api(req, res, pathname) {
+  if (pathname === '/api/auth/session') return json(res, 200, {authenticated:authorized(req)});
+  if (pathname === '/api/auth/login' && req.method === 'POST') {
+    if (!process.env.APP_PASSWORD || !authSecret()) return json(res,503,{error:'Autenticação ainda não configurada'});
+    const data = await body(req);
+    if (!passwordMatches(data.password)) return json(res,401,{error:'Senha incorreta'});
+    const expires = String(Date.now() + 12 * 60 * 60 * 1000);
+    res.writeHead(200, {'content-type':'application/json','set-cookie':`baladatrade_session=${expires}.${sign(expires)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200`});
+    return res.end(JSON.stringify({authenticated:true}));
+  }
+  if (pathname === '/api/auth/logout' && req.method === 'POST') {
+    res.writeHead(200, {'content-type':'application/json','set-cookie':'baladatrade_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});
+    return res.end(JSON.stringify({authenticated:false}));
+  }
   if (!authorized(req)) return json(res, 401, {error:'Não autorizado'});
   const cfg = binanceConfig();
   if (pathname === '/api/binance/status') return json(res, 200, {configured:Boolean(cfg.key&&cfg.secret), environment:cfg.base.includes('testnet')?'testnet':'real', liveEnabled:cfg.live, maxOrderNotional:cfg.max});

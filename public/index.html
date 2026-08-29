@@ -20,6 +20,8 @@
     <a class="brand" href="#"><span>BT</span> BaladaTrade</a>
     <nav>
       <button class="nav active" data-view="dashboard">◫ <span>Visão geral</span></button>
+      <button class="nav" data-view="holding">◉ <span>Minha holding</span></button>
+      <button class="nav" data-view="radar">⌁ <span>Radar 50</span></button>
       <button class="nav" data-view="journal">↗ <span>Diário de trades</span></button>
       <button class="nav" data-view="missions">★ <span>Missões</span></button>
       <button class="nav" data-view="risk">◇ <span>Gestão de risco</span></button>
@@ -55,6 +57,10 @@
         <article class="panel"><div class="panel-head"><div><small>MISSÕES</small><h3>Próximos objetivos</h3></div><span id="missionCount" class="tag">0/3</span></div><div id="missionPreview"></div></article>
       </div>
     </section>
+
+    <section id="holding" class="view"><div class="section-head"><div><p class="eyebrow">BINANCE · SOMENTE LEITURA</p><h2>Minha Holding</h2><p class="muted">Saldo, composição e variação registrados no PostgreSQL.</p></div><button class="primary" id="refreshHolding">Atualizar carteira</button></div><div class="metrics"><article><small>PATRIMÔNIO</small><strong id="holdingTotal">—</strong><span>Em USDT</span></article><article><small>VARIAÇÃO 24H</small><strong id="holdingChange">—</strong><span id="holdingChangeValue">Aguardando atualização</span></article><article><small>ATIVOS</small><strong id="holdingAssets">0</strong><span>Com saldo</span></article><article><small>ÚLTIMA LEITURA</small><strong id="holdingTime">—</strong><span>Snapshot no banco</span></article></div><div class="grid-main"><article class="panel"><div class="panel-head"><div><small>COMPOSIÇÃO</small><h3>Posições da carteira</h3></div><span class="tag">TOP 50</span></div><div id="holdingList" class="holding-list"><div class="empty">Clique em Atualizar carteira.</div></div></article><article class="panel"><small>ALERTAS</small><h3>Atenção necessária</h3><div id="holdingAlerts"><div class="empty">Nenhum alerta calculado.</div></div></article></div></section>
+
+    <section id="radar" class="view"><div class="section-head"><div><p class="eyebrow">MERCADO SPOT · USDT</p><h2>Radar de 50 moedas</h2><p class="muted">Força baseada em volume, variação e posição no intervalo diário.</p></div><button class="primary" id="refreshRadar">Atualizar radar</button></div><div class="panel table-wrap"><table><thead><tr><th>#</th><th>Moeda</th><th>Preço USDT</th><th>Variação 24h</th><th>Volume USDT</th><th>Nota</th><th>Estado</th></tr></thead><tbody id="radarTable"></tbody></table><div id="radarEmpty" class="empty">Clique em Atualizar radar.</div></div></section>
 
     <section id="journal" class="view"><div class="section-head"><div><p class="eyebrow">DIÁRIO</p><h2>Suas decisões, sem desculpas.</h2></div><button class="primary open-modal">+ Novo trade</button></div><div class="panel table-wrap"><table><thead><tr><th>Data</th><th>Ativo</th><th>Mercado</th><th>Lado</th><th>Resultado</th><th>Risco</th><th>Plano?</th><th></th></tr></thead><tbody id="tradeTable"></tbody></table><div id="emptyTable" class="empty">Seu diário ainda está vazio.</div></div></section>
 

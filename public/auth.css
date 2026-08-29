@@ -4,3 +4,7 @@
 .login-card h1{font-size:30px;margin:0}
 .login-logo{display:grid;place-items:center;width:55px;height:55px;border-radius:16px;background:var(--lime);color:#092e23;font-size:22px;font-weight:900}
 .header-actions{display:flex;gap:10px}
+.holding-row{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center;padding:15px 0;border-bottom:1px solid var(--line)}
+.holding-row:last-child{border:0}.holding-row b,.holding-row small,.holding-row strong,.holding-row span{display:block}.holding-row small,.holding-row span{color:var(--muted);font-size:12px}.holding-row div:last-child{text-align:right}
+.alert{display:grid;gap:3px;padding:13px;margin:10px 0;border-radius:10px;background:#eef6f1;border-left:4px solid var(--green)}.alert.warning{background:#fff8df;border-color:#d99b16}.alert.danger{background:#ffeded;border-color:var(--red)}.alert span{font-size:12px;color:var(--muted)}
+#radarTable small{display:block;color:var(--muted)}

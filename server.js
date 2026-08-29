@@ -89,6 +89,39 @@ async function portfolioSummary(){
   return {total,changeValue,changePct,assets,capturedAt:new Date().toISOString()};
 }
 
+function marketBase(){return 'https://api.binance.com'}
+async function marketRadar(limit=50){
+  const response=await fetch(`${marketBase()}/api/v3/ticker/24hr`);
+  if(!response.ok)throw new Error('Radar de mercado indisponível.');
+  const blocked=/^(USDC|FDUSD|TUSD|USDP|DAI|EUR|BRL|TRY|BIDR|AEUR|BUSD)$/;
+  const leveraged=/(UP|DOWN|BULL|BEAR)$/;
+  const rows=(await response.json()).filter(t=>t.symbol.endsWith('USDT')).map(t=>({
+    symbol:t.symbol,asset:t.symbol.slice(0,-4),price:Number(t.lastPrice),change24h:Number(t.priceChangePercent),
+    volume:Number(t.quoteVolume),high:Number(t.highPrice),low:Number(t.lowPrice),trades:Number(t.count)
+  })).filter(t=>t.price>0&&t.volume>0&&!blocked.test(t.asset)&&!leveraged.test(t.asset)).sort((a,b)=>b.volume-a.volume).slice(0,Math.min(Math.max(limit,1),50));
+  const maxVolume=Math.max(...rows.map(r=>Math.log10(r.volume+1)));
+  return rows.map(row=>{
+    const volumeScore=Math.log10(row.volume+1)/maxVolume*35;
+    const momentumScore=Math.max(0,Math.min(35,17.5+row.change24h*2.2));
+    const range=row.high-row.low,position=range?((row.price-row.low)/range)*20:10;
+    const activity=Math.min(10,Math.log10(row.trades+1));
+    const score=Math.round(Math.max(0,Math.min(100,volumeScore+momentumScore+position+activity)));
+    const state=score>=85?'Aquecida':score>=70?'Força':score>=50?'Observação':score>=30?'Fraca':'Fraqueza';
+    return {...row,score,state};
+  }).sort((a,b)=>b.score-a.score);
+}
+
+function portfolioAlerts(summary){
+  const alerts=[];
+  for(const asset of summary.assets){
+    const concentration=summary.total?asset.value/summary.total*100:0;
+    if(concentration>=60)alerts.push({level:'warning',asset:asset.asset,message:`${asset.asset} representa ${concentration.toFixed(1)}% da carteira.`});
+    if(Math.abs(asset.changePct)>=5)alerts.push({level:asset.changePct<0?'danger':'info',asset:asset.asset,message:`${asset.asset} variou ${asset.changePct.toFixed(2)}% em 24h.`});
+  }
+  if(Math.abs(summary.changePct)>=3)alerts.push({level:summary.changePct<0?'danger':'info',asset:'CARTEIRA',message:`A carteira variou ${summary.changePct.toFixed(2)}% em 24h.`});
+  return alerts;
+}
+
 async function api(req, res, pathname) {
   if (pathname === '/api/auth/session') return json(res, 200, {authenticated:authorized(req)});
   if (pathname === '/api/auth/login' && req.method === 'POST') {
@@ -114,9 +147,10 @@ async function api(req, res, pathname) {
     if (pathname === '/api/portfolio/refresh' && req.method === 'POST') {
       const summary=await portfolioSummary();
       const saved=await saveSnapshot(summary);
-      return json(res,200,{...summary,snapshotId:saved.id});
+      return json(res,200,{...summary,alerts:portfolioAlerts(summary),snapshotId:saved.id});
     }
     if (pathname === '/api/portfolio/history' && req.method === 'GET') return json(res,200,{history:await history(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||30))});
+    if (pathname === '/api/market/radar' && req.method === 'GET') return json(res,200,{coins:await marketRadar(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50)),updatedAt:new Date().toISOString()});
     if ((pathname === '/api/binance/order/test' || pathname === '/api/binance/order') && req.method === 'POST') {
       const order = await body(req);
       const symbol = String(order.symbol||'').toUpperCase();

@@ -213,6 +213,19 @@ async function api(req, res, pathname) {
     }
     if (pathname === '/api/portfolio/history' && req.method === 'GET') return json(res,200,{history:await history(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||30))});
     if (pathname === '/api/market/radar' && req.method === 'GET') {const coins=await marketRadar(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50));return json(res,200,{coins,alerts:marketAlerts(coins),updatedAt:new Date().toISOString()});}
+    if (pathname === '/api/market/symbols' && req.method === 'GET') {
+      const response=await fetch(`${marketBase()}/api/v3/exchangeInfo`),data=await response.json();
+      if(!response.ok)throw new Error(data.msg||'Lista de mercados indisponível.');
+      const symbols=data.symbols.filter(item=>item.status==='TRADING').map(item=>({symbol:item.symbol,base:item.baseAsset,quote:item.quoteAsset,spot:item.isSpotTradingAllowed}));
+      return json(res,200,{symbols,count:symbols.length,updatedAt:new Date().toISOString()});
+    }
+    if (pathname === '/api/market/klines' && req.method === 'GET') {
+      const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'SOLUSDT').toUpperCase(),interval=String(url.searchParams.get('interval')||'1d');
+      if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!['15m','1h','4h','1d','1w'].includes(interval))return json(res,400,{error:'Par ou intervalo inválido.'});
+      const response=await fetch(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=120`),data=await response.json();
+      if(!response.ok)throw new Error(data.msg||'Gráfico indisponível.');
+      return json(res,200,{symbol,interval,candles:data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5])}))});
+    }
     if (pathname === '/api/paper/account' && req.method === 'GET') return json(res,200,await paperSummary());
     if (pathname === '/api/paper/order' && req.method === 'POST') {
       const order=await body(req),symbol=String(order.symbol||'').toUpperCase(),side=String(order.side||'').toUpperCase(),amount=Number(order.amount);

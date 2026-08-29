@@ -1,0 +1,8 @@
+.nav[data-view="journal"],.nav[data-view="missions"],.nav[data-view="risk"],#newTrade{display:none}
+.ai-panel{margin-bottom:16px;border-color:#b9dacd;background:linear-gradient(135deg,#fff,#edf8f3)}
+.ai-result>p{font-size:17px;font-weight:700}
+.ai-assets{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:16px 0}
+.ai-assets>div{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;background:#fff}
+.ai-assets small{grid-column:1/-1;color:var(--muted)}
+.ai-result>small{display:block;color:var(--muted);margin-top:12px}
+@media(max-width:700px){.ai-assets{grid-template-columns:1fr}.section-head{align-items:flex-start;flex-direction:column}.header-actions{display:flex;flex-wrap:wrap}}

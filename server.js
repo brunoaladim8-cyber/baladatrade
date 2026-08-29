@@ -2,6 +2,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const Anthropic = require('@anthropic-ai/sdk');
 const {initDatabase,saveSnapshot,history}=require('./db');
 
 const root = path.join(__dirname, 'public');
@@ -72,12 +73,23 @@ async function signedBinance(endpoint, method='GET', params={}) {
 }
 
 async function portfolioSummary(){
-  const account=await signedBinance('/api/v3/account');
+  const [account,earnResult,fundingResult]=await Promise.all([
+    signedBinance('/api/v3/account'),
+    signedBinance('/sapi/v1/simple-earn/flexible/position','GET',{current:'1',size:'100'}).catch(error=>({rows:[],_error:error.message})),
+    signedBinance('/sapi/v1/asset/get-funding-asset','POST').catch(error=>Object.assign([],{_error:error.message}))
+  ]);
   const response=await fetch(`${binanceConfig().base}/api/v3/ticker/24hr`);
   if(!response.ok)throw new Error('Não foi possível consultar preços da Binance.');
   const tickers=await response.json(),bySymbol=new Map(tickers.map(item=>[item.symbol,item]));
   const stable=new Set(['USDT','USDC','FDUSD','TUSD']);
-  const assets=account.balances.map(balance=>({asset:balance.asset,quantity:Number(balance.free)+Number(balance.locked)})).filter(item=>item.quantity>0).map(item=>{
+  const positions=[
+    ...account.balances.map(balance=>({asset:balance.asset,quantity:Number(balance.free)+Number(balance.locked),wallet:'Spot'})),
+    ...(earnResult.rows||[]).map(row=>({asset:row.asset,quantity:Number(row.totalAmount||0),wallet:'Simple Earn'})),
+    ...(Array.isArray(fundingResult)?fundingResult:[]).map(row=>({asset:row.asset,quantity:Number(row.free||0)+Number(row.locked||0),wallet:'Funding'}))
+  ].filter(item=>item.quantity>0);
+  const merged=new Map();
+  for(const item of positions){const current=merged.get(item.asset)||{asset:item.asset,quantity:0,wallets:[]};current.quantity+=item.quantity;if(!current.wallets.includes(item.wallet))current.wallets.push(item.wallet);merged.set(item.asset,current)}
+  const assets=[...merged.values()].map(item=>{
     if(stable.has(item.asset))return {...item,price:1,value:item.quantity,changePct:0};
     const ticker=bySymbol.get(`${item.asset}USDT`);if(!ticker)return null;
     const price=Number(ticker.lastPrice),changePct=Number(ticker.priceChangePercent);
@@ -86,7 +98,10 @@ async function portfolioSummary(){
   const total=assets.reduce((sum,item)=>sum+item.value,0);
   const previousTotal=assets.reduce((sum,item)=>sum+(item.value/(1+item.changePct/100)||item.value),0);
   const changeValue=total-previousTotal,changePct=previousTotal?changeValue/previousTotal*100:0;
-  return {total,changeValue,changePct,assets,capturedAt:new Date().toISOString()};
+  const walletWarnings=[];
+  if(earnResult._error)walletWarnings.push('Simple Earn não pôde ser consultado com as permissões atuais.');
+  if(fundingResult._error)walletWarnings.push('Funding não pôde ser consultado com as permissões atuais.');
+  return {total,changeValue,changePct,assets,walletWarnings,capturedAt:new Date().toISOString()};
 }
 
 function marketBase(){return 'https://api.binance.com'}
@@ -109,6 +124,21 @@ async function marketRadar(limit=50){
     const state=score>=85?'Aquecida':score>=70?'Força':score>=50?'Observação':score>=30?'Fraca':'Fraqueza';
     return {...row,score,state};
   }).sort((a,b)=>b.score-a.score);
+}
+
+async function marketAgentAnalysis(){
+  if(!process.env.ANTHROPIC_API_KEY)throw new Error('Agente Anthropic ainda não configurado. Adicione ANTHROPIC_API_KEY no Railway.');
+  const coins=await marketRadar(50);
+  const sample=coins.slice(0,15).map(({symbol,price,change24h,volume,high,low,trades,score,state})=>({symbol,price,change24h,volume,high,low,trades,score,state}));
+  const client=new Anthropic({apiKey:process.env.ANTHROPIC_API_KEY});
+  const message=await client.messages.create({
+    model:process.env.ANTHROPIC_MODEL||'claude-sonnet-4-6',max_tokens:1200,temperature:0.2,
+    system:'Você é um analista quantitativo cauteloso. Analise somente os dados fornecidos. Não prometa lucro, não dê ordem de compra/venda e não invente notícias. Alta passada não prevê alta futura. Responda apenas JSON válido.',
+    messages:[{role:'user',content:`Analise este radar spot USDT. Retorne {"summary":"...","cautions":["..."],"assets":[{"symbol":"...","label":"FORÇA|OBSERVAR|RISCO","reason":"..."}]}. Escolha no máximo 6 ativos e cite variação, volume/score ou posição no range como evidência. Dados: ${JSON.stringify(sample)}`}]
+  });
+  const text=message.content.filter(block=>block.type==='text').map(block=>block.text).join('').replace(/^```json\s*|\s*```$/g,'');
+  let analysis;try{analysis=JSON.parse(text)}catch{throw new Error('O agente retornou uma análise inválida. Tente novamente.');}
+  return {analysis,model:message.model,generatedAt:new Date().toISOString(),disclaimer:'Análise educacional baseada em dados de mercado; não é recomendação financeira.'};
 }
 
 function portfolioAlerts(summary){
@@ -151,6 +181,7 @@ async function api(req, res, pathname) {
     }
     if (pathname === '/api/portfolio/history' && req.method === 'GET') return json(res,200,{history:await history(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||30))});
     if (pathname === '/api/market/radar' && req.method === 'GET') return json(res,200,{coins:await marketRadar(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50)),updatedAt:new Date().toISOString()});
+    if (pathname === '/api/ai/market-analysis' && req.method === 'POST') return json(res,200,await marketAgentAnalysis());
     if ((pathname === '/api/binance/order/test' || pathname === '/api/binance/order') && req.method === 'POST') {
       const order = await body(req);
       const symbol = String(order.symbol||'').toUpperCase();

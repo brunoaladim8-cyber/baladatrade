@@ -34,6 +34,32 @@ async function initDatabase(){
       details JSONB NOT NULL DEFAULT '{}',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS paper_accounts (
+      id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      cash_usdt NUMERIC(24,8) NOT NULL,
+      initial_usdt NUMERIC(24,8) NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS paper_positions (
+      symbol VARCHAR(24) PRIMARY KEY,
+      asset VARCHAR(20) NOT NULL,
+      quantity NUMERIC(36,18) NOT NULL DEFAULT 0,
+      average_price_usdt NUMERIC(24,8) NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS paper_orders (
+      id BIGSERIAL PRIMARY KEY,
+      symbol VARCHAR(24) NOT NULL,
+      side VARCHAR(4) NOT NULL CHECK (side IN ('BUY','SELL')),
+      quantity NUMERIC(36,18) NOT NULL,
+      price_usdt NUMERIC(24,8) NOT NULL,
+      notional_usdt NUMERIC(24,8) NOT NULL,
+      fee_usdt NUMERIC(24,8) NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO paper_accounts(id,cash_usdt,initial_usdt)
+    VALUES(1,1000,1000) ON CONFLICT(id) DO NOTHING;
+    CREATE INDEX IF NOT EXISTS paper_orders_created_idx ON paper_orders(created_at DESC);
   `);return true;
 }
 
@@ -55,4 +81,41 @@ async function history(limit=30){
   return result.rows;
 }
 
-module.exports={initDatabase,saveSnapshot,history};
+async function paperData(){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  const [account,positions,orders]=await Promise.all([
+    db.query('SELECT cash_usdt::float8,initial_usdt::float8,updated_at FROM paper_accounts WHERE id=1'),
+    db.query('SELECT symbol,asset,quantity::float8,average_price_usdt::float8 FROM paper_positions WHERE quantity>0 ORDER BY symbol'),
+    db.query('SELECT id,symbol,side,quantity::float8,price_usdt::float8,notional_usdt::float8,fee_usdt::float8,created_at FROM paper_orders ORDER BY created_at DESC LIMIT 50')
+  ]);
+  return {account:account.rows[0],positions:positions.rows,orders:orders.rows};
+}
+
+async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const account=(await client.query('SELECT cash_usdt::float8,initial_usdt::float8 FROM paper_accounts WHERE id=1 FOR UPDATE')).rows[0];
+    const current=(await client.query('SELECT quantity::float8,average_price_usdt::float8 FROM paper_positions WHERE symbol=$1 FOR UPDATE',[symbol])).rows[0]||{quantity:0,average_price_usdt:0};
+    const notional=quantity*price,fee=notional*feeRate;
+    if(side==='BUY'){
+      if(notional+fee>account.cash_usdt)throw new Error('Saldo simulado insuficiente.');
+      const nextQuantity=current.quantity+quantity;
+      const nextAverage=((current.quantity*current.average_price_usdt)+notional)/nextQuantity;
+      await client.query('UPDATE paper_accounts SET cash_usdt=cash_usdt-$1,updated_at=NOW() WHERE id=1',[notional+fee]);
+      await client.query(`INSERT INTO paper_positions(symbol,asset,quantity,average_price_usdt) VALUES($1,$2,$3,$4)
+        ON CONFLICT(symbol) DO UPDATE SET quantity=$3,average_price_usdt=$4,updated_at=NOW()`,[symbol,asset,nextQuantity,nextAverage]);
+    }else{
+      if(quantity>current.quantity)throw new Error('Quantidade simulada insuficiente para vender.');
+      const nextQuantity=current.quantity-quantity;
+      await client.query('UPDATE paper_accounts SET cash_usdt=cash_usdt+$1,updated_at=NOW() WHERE id=1',[notional-fee]);
+      await client.query('UPDATE paper_positions SET quantity=$2,updated_at=NOW() WHERE symbol=$1',[symbol,nextQuantity]);
+    }
+    await client.query('INSERT INTO paper_orders(symbol,side,quantity,price_usdt,notional_usdt,fee_usdt) VALUES($1,$2,$3,$4,$5,$6)',[symbol,side,quantity,price,notional,fee]);
+    await client.query('INSERT INTO audit_log(event,details) VALUES($1,$2)',['paper_order',{symbol,side,quantity,price}]);
+    await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
+}
+
+module.exports={initDatabase,saveSnapshot,history,paperData,paperOrder};

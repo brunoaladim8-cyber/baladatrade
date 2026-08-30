@@ -1,0 +1,23 @@
+{
+  "asset": "UNI",
+  "name": "Uniswap",
+  "updatedAt": "2026-08-30",
+  "summary": "Token de governança do protocolo Uniswap. Desde dezembro de 2025, taxas de produtos do protocolo podem ser usadas para comprar e queimar UNI; holders não recebem receita diretamente.",
+  "catalysts": [
+    "Possível expansão das taxas do protocolo para mais redes e pools.",
+    "Discussão de ativação de taxas no Uniswap v4.",
+    "Expansão de v4, hooks, pools permissionados e novas redes."
+  ],
+  "risks": [
+    "Movimentos rápidos podem sofrer reversão forte.",
+    "Governança pode alterar taxas, tesouraria e emissão.",
+    "UNI não é ação e não dá direito direto à receita.",
+    "Concorrência, regulação e riscos técnicos de DeFi."
+  ],
+  "sources": [
+    {"label":"UNI Token — Uniswap Developers","url":"https://developers.uniswap.org/docs/ecosystem/governance/uni"},
+    {"label":"Governance Forum","url":"https://gov.uniswap.org/"},
+    {"label":"Uniswap Labs Blog","url":"https://blog.uniswap.org/"},
+    {"label":"UNIfication","url":"https://blog.uniswap.org/unification"}
+  ]
+}

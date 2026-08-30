@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
-const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory}=require('./db');
+const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -178,6 +178,23 @@ async function syncBinancePay(){
   return {...await importLedgerEntries(entries),received:rows.length,eligible:payRows.length,periodDays:89,warning:'A API oficial expõe Binance Pay. Compras exclusivas do cartão que não aparecem como PAY precisam de extrato/CSV.'};
 }
 
+async function marginMonitor(){
+  const [account,tickers]=await Promise.all([signedBinance('/sapi/v1/margin/account'),fetch(`${marketBase()}/api/v3/ticker/price`).then(r=>r.json())]),prices=new Map(tickers.map(x=>[x.symbol,Number(x.price)])),stable=new Set(['USDT','USDC','FDUSD','TUSD']);
+  const positions=(account.userAssets||[]).map(row=>{const price=stable.has(row.asset)?1:prices.get(`${row.asset}USDT`)||0,free=Number(row.free),locked=Number(row.locked),borrowed=Number(row.borrowed),interest=Number(row.interest),net=Number(row.netAsset),debt=borrowed+interest;return {asset:row.asset,free,locked,borrowed,interest,net,price,netUsdt:net*price,debtUsdt:debt*price,direction:net<0?'SHORT':debt>0||net>0?'LONG':'FLAT'}}).filter(x=>Math.abs(x.netUsdt)>=.01||x.debtUsdt>=.01).sort((a,b)=>b.debtUsdt-a.debtUsdt||Math.abs(b.netUsdt)-Math.abs(a.netUsdt));
+  const level=Number(account.marginLevel||0),alerts=[];if(level&&level<1.5)alerts.push({kind:'margin',level:'danger',title:'Nível de margem crítico',message:`Nível ${level.toFixed(2)}. Reduza dívida antes de nova operação.`,fingerprint:`margin-critical-${new Date().toISOString().slice(0,13)}`,payload:{level}});for(const p of positions.filter(x=>x.interest>0))alerts.push({kind:'interest',level:'warning',symbol:p.asset,title:`Juros em ${p.asset}`,message:`${p.interest} ${p.asset} acumulados.`,fingerprint:`interest-${p.asset}-${new Date().toISOString().slice(0,10)}`,payload:p});await saveAlerts(alerts);
+  return {level,totalAssetUsdt:Number(account.totalAssetOfBtc||0)*(prices.get('BTCUSDT')||0),totalDebtUsdt:Number(account.totalLiabilityOfBtc||0)*(prices.get('BTCUSDT')||0),netUsdt:Number(account.totalNetAssetOfBtc||0)*(prices.get('BTCUSDT')||0),positions,alerts,updatedAt:new Date().toISOString()};
+}
+
+async function setupScanner(){
+  const coins=(await marketRadar(50)).slice(0,25),results=await Promise.all(coins.map(async coin=>{try{const [m15,h1]=await Promise.all([publicKlines(coin.symbol,'15m',80),publicKlines(coin.symbol,'1h',80)]),short=timeframeReading(m15,'15m'),long=timeframeReading(h1,'1h'),distanceEma=long.atr?Math.abs(coin.price-short.ema20)/long.atr:99;let setup='OBSERVAR',reason='Sem alinhamento suficiente';if(coin.change24h>0&&(coin.price-coin.low)/(coin.high-coin.low||1)>.9||short.rsi>=75){setup='ESTICADA';reason='Perto da máxima ou RSI curto elevado'}else if(long.trend==='ALTA'&&distanceEma<=.6&&short.rsi>=38&&short.rsi<=65){setup='PULLBACK LONG';reason='Tendência de 1h em alta e preço próximo da EMA20'}else if(long.trend==='BAIXA'&&short.trend==='BAIXA'&&short.rsi>30){setup='POSSÍVEL SHORT';reason='15m e 1h alinhados em baixa; confirme rompimento e stop'}else if(long.trend==='ALTA'&&short.trend==='ALTA'&&short.volumeRatio>=1.2){setup='FORÇA LONG';reason='15m e 1h em alta com volume relativo'}return {...coin,setup,reason,rsi15:short.rsi,atr15Pct:short.atrPct,volumeRatio15:short.volumeRatio,trend15:short.trend,trend1h:long.trend}}catch{return {...coin,setup:'SEM DADOS',reason:'Candles indisponíveis'}}}));
+  const alerts=results.filter(x=>['PULLBACK LONG','POSSÍVEL SHORT','FORÇA LONG'].includes(x.setup)).map(x=>({kind:'setup',level:'info',symbol:x.symbol,title:`${x.setup}: ${x.symbol}`,message:x.reason,fingerprint:`setup-${x.symbol}-${x.setup}-${new Date().toISOString().slice(0,13)}`,payload:x}));await saveAlerts(alerts);return {setups:results,generatedAt:new Date().toISOString()};
+}
+
+async function evaluatePlans(){
+  const plans=(await tradePlanHistory('',200)).filter(x=>x.status==='PLANNED'),evaluated=[];
+  for(const plan of plans){let price;try{price=await publicPrice(plan.symbol)}catch{continue}const hitTarget=plan.direction==='LONG'?price>=plan.target:price<=plan.target,hitStop=plan.direction==='LONG'?price<=plan.stop:price>=plan.stop;let status='PLANNED',exit=price;if(hitTarget){status='TARGET';exit=plan.target}else if(hitStop){status='STOP';exit=plan.stop}const pnl=(plan.direction==='LONG'?exit-plan.entry:plan.entry-exit)*plan.quantity;if(status!=='PLANNED'){await closeTradePlan(plan.id,status,exit,pnl,new Date());await saveAlerts([{kind:'plan',level:status==='TARGET'?'info':'danger',symbol:plan.symbol,title:`Plano #${plan.id}: ${status}`,message:`Resultado aproximado ${pnl.toFixed(4)} USDT.`,fingerprint:`plan-${plan.id}-${status}`,payload:{planId:plan.id,pnl,exit}}])}evaluated.push({...plan,currentPrice:price,currentPnl:(plan.direction==='LONG'?price-plan.entry:plan.entry-price)*plan.quantity,status:status==='PLANNED'?plan.status:status})}return {plans:evaluated,updatedAt:new Date().toISOString()};
+}
+
 function ema(values,period){if(!values.length)return 0;const k=2/(period+1);return values.slice(1).reduce((value,item)=>item*k+value*(1-k),values[0])}
 function atr(candles,period=14){const ranges=candles.map((c,i)=>Math.max(c.high-c.low,i?Math.abs(c.high-candles[i-1].close):0,i?Math.abs(c.low-candles[i-1].close):0));const sample=ranges.slice(-period);return sample.length?sample.reduce((a,b)=>a+b,0)/sample.length:0}
 function rsi(values,period=14){if(values.length<2)return 50;const changes=values.slice(1).map((v,i)=>v-values[i]).slice(-period),gain=changes.reduce((s,v)=>s+Math.max(v,0),0)/changes.length,loss=changes.reduce((s,v)=>s+Math.max(-v,0),0)/changes.length;return loss?100-(100/(1+gain/loss)):100}
@@ -290,7 +307,10 @@ async function api(req, res, pathname) {
       const saved=await saveMarketScan(scan).catch(()=>null);return json(res,200,{...scan,savedScanId:saved?.id||null});
     }
     if (pathname === '/api/market/scans' && req.method === 'GET') {const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});return json(res,200,{symbol,scans:await marketScanHistory(symbol,Number(url.searchParams.get('limit')||50))});}
+    if (pathname === '/api/market/setups' && req.method === 'GET') return json(res,200,await setupScanner());
+    if (pathname === '/api/margin/monitor' && req.method === 'GET') return json(res,200,await marginMonitor());
     if (pathname === '/api/trade-plans' && req.method === 'GET') {const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();return json(res,200,{plans:await tradePlanHistory(symbol,Number(url.searchParams.get('limit')||50))});}
+    if (pathname === '/api/trade-plans/evaluate' && req.method === 'POST') return json(res,200,await evaluatePlans());
     if (pathname === '/api/trade-plans' && req.method === 'POST') {const data=await body(req),symbol=String(data.symbol||'').toUpperCase(),numbers=['entry','stop','target','capital','riskPct','riskMoney','quantity','leverage','riskReward'];if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!['LONG','SHORT'].includes(data.direction)||numbers.some(key=>!Number.isFinite(Number(data[key]))||Number(data[key])<=0))return json(res,400,{error:'Plano inválido.'});const saved=await saveTradePlan({...data,symbol,...Object.fromEntries(numbers.map(key=>[key,Number(data[key])]))});return json(res,201,{ok:true,saved});}
     if (pathname === '/api/binance/trades' && req.method === 'GET') {
       const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();
@@ -305,6 +325,7 @@ async function api(req, res, pathname) {
     if (pathname === '/api/paper/account' && req.method === 'GET') return json(res,200,await paperSummary());
     if (pathname === '/api/ledger' && req.method === 'GET') return json(res,200,await ledgerData(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||200)));
     if (pathname === '/api/ledger/sync-binance' && req.method === 'POST') return json(res,200,{ok:true,...await syncBinancePay(),ledger:await ledgerData(200)});
+    if (pathname === '/api/alerts' && req.method === 'GET') return json(res,200,{alerts:await alertHistory(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||100)),whatsappConfigured:Boolean(process.env.WHATSAPP_WEBHOOK_URL)});
     if (pathname === '/api/ledger' && req.method === 'POST') {
       const entry=await body(req),type=String(entry.type||''),description=String(entry.description||'').trim(),amountBrl=Number(entry.amountBrl||0),amountUsdt=Number(entry.amountUsdt||0);
       if(!['expense','trade_pnl','fee','interest','transfer','income'].includes(type)||!description||description.length>160||amountBrl<0||amountUsdt<0||(!amountBrl&&!amountUsdt))return json(res,400,{error:'Lançamento financeiro inválido.'});

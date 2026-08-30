@@ -109,13 +109,33 @@ async function initDatabase(){
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS trade_plans_symbol_time_idx ON trade_plans(symbol,created_at DESC);
+    ALTER TABLE trade_plans ADD COLUMN IF NOT EXISTS outcome_price NUMERIC(30,12);
+    ALTER TABLE trade_plans ADD COLUMN IF NOT EXISTS outcome_usdt NUMERIC(24,8);
+    ALTER TABLE trade_plans ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+    CREATE TABLE IF NOT EXISTS alert_events (
+      id BIGSERIAL PRIMARY KEY,
+      kind VARCHAR(32) NOT NULL,
+      level VARCHAR(12) NOT NULL,
+      symbol VARCHAR(24),
+      title VARCHAR(160) NOT NULL,
+      message TEXT NOT NULL,
+      fingerprint VARCHAR(180) NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}',
+      acknowledged_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(fingerprint)
+    );
+    CREATE INDEX IF NOT EXISTS alert_events_created_idx ON alert_events(created_at DESC);
   `);return true;
 }
 
 async function saveMarketScan(scan){const db=database();if(!db)return null;const result=await db.query(`INSERT INTO market_scans(symbol,price,change_24h,high_24h,low_24h,amplitude_pct,range_position_pct,risk_score,alignment,spread_pct,book_imbalance_pct,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,captured_at`,[scan.symbol,scan.price,scan.change24h,scan.high,scan.low,scan.amplitude,scan.rangePosition,scan.risk.score,scan.alignment,scan.orderBook.spreadPct,scan.orderBook.imbalancePct,scan]);return result.rows[0]}
 async function marketScanHistory(symbol,limit=50){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`SELECT id,symbol,price::float8,change_24h::float8,high_24h::float8,low_24h::float8,amplitude_pct::float8,range_position_pct::float8,risk_score,alignment,spread_pct::float8,book_imbalance_pct::float8,captured_at FROM market_scans WHERE symbol=$1 ORDER BY captured_at DESC LIMIT $2`,[symbol,Math.min(Math.max(limit,1),500)])).rows}
 async function saveTradePlan(plan){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`INSERT INTO trade_plans(symbol,direction,entry,stop,target,capital_usdt,risk_pct,risk_usdt,quantity,leverage,risk_reward) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,created_at`,[plan.symbol,plan.direction,plan.entry,plan.stop,plan.target,plan.capital,plan.riskPct,plan.riskMoney,plan.quantity,plan.leverage,plan.riskReward])).rows[0]}
-async function tradePlanHistory(symbol,limit=50){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`SELECT id,symbol,direction,entry::float8,stop::float8,target::float8,capital_usdt::float8,risk_pct::float8,risk_usdt::float8,quantity::float8,leverage,risk_reward::float8,status,created_at FROM trade_plans WHERE ($1='' OR symbol=$1) ORDER BY created_at DESC LIMIT $2`,[symbol,Math.min(Math.max(limit,1),500)])).rows}
+async function tradePlanHistory(symbol,limit=50){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`SELECT id,symbol,direction,entry::float8,stop::float8,target::float8,capital_usdt::float8,risk_pct::float8,risk_usdt::float8,quantity::float8,leverage,risk_reward::float8,status,outcome_price::float8,outcome_usdt::float8,closed_at,created_at FROM trade_plans WHERE ($1='' OR symbol=$1) ORDER BY created_at DESC LIMIT $2`,[symbol,Math.min(Math.max(limit,1),500)])).rows}
+async function closeTradePlan(id,status,price,pnl,closedAt){const db=database();if(!db)return;await db.query('UPDATE trade_plans SET status=$2,outcome_price=$3,outcome_usdt=$4,closed_at=$5 WHERE id=$1 AND status=\'PLANNED\'',[id,status,price,pnl,closedAt])}
+async function saveAlerts(alerts){const db=database();if(!db)return {saved:0};let saved=0;for(const item of alerts){const result=await db.query(`INSERT INTO alert_events(kind,level,symbol,title,message,fingerprint,payload) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(fingerprint) DO NOTHING`,[item.kind,item.level,item.symbol||null,item.title,item.message,item.fingerprint,item.payload||{}]);saved+=result.rowCount}return {saved}}
+async function alertHistory(limit=100){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query('SELECT id,kind,level,symbol,title,message,payload,acknowledged_at,created_at FROM alert_events ORDER BY created_at DESC LIMIT $1',[Math.min(Math.max(limit,1),500)])).rows}
 
 async function ledgerData(limit=200){
   const db=database();if(!db)throw new Error('Banco de dados não configurado.');
@@ -211,4 +231,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory};
+module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory};

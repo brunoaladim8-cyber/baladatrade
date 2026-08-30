@@ -60,7 +60,48 @@ async function initDatabase(){
     INSERT INTO paper_accounts(id,cash_usdt,initial_usdt)
     VALUES(1,1000,1000) ON CONFLICT(id) DO NOTHING;
     CREATE INDEX IF NOT EXISTS paper_orders_created_idx ON paper_orders(created_at DESC);
+    CREATE TABLE IF NOT EXISTS financial_ledger (
+      id BIGSERIAL PRIMARY KEY,
+      occurred_at TIMESTAMPTZ NOT NULL,
+      type VARCHAR(20) NOT NULL CHECK (type IN ('expense','trade_pnl','fee','interest','transfer','income')),
+      category VARCHAR(40) NOT NULL DEFAULT 'Outros',
+      description VARCHAR(160) NOT NULL,
+      amount_brl NUMERIC(18,2) NOT NULL DEFAULT 0,
+      amount_usdt NUMERIC(24,8) NOT NULL DEFAULT 0,
+      source VARCHAR(30) NOT NULL DEFAULT 'manual',
+      external_id VARCHAR(120),
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(source,external_id)
+    );
+    CREATE INDEX IF NOT EXISTS financial_ledger_occurred_idx ON financial_ledger(occurred_at DESC);
   `);return true;
+}
+
+async function ledgerData(limit=200){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  const entries=(await db.query(`SELECT id,occurred_at,type,category,description,amount_brl::float8,amount_usdt::float8,source,notes
+    FROM financial_ledger ORDER BY occurred_at DESC LIMIT $1`,[Math.min(Math.max(limit,1),1000)])).rows;
+  const summary=(await db.query(`SELECT
+    COALESCE(SUM(amount_brl) FILTER (WHERE type='expense'),0)::float8 AS expenses_brl,
+    COALESCE(SUM(amount_usdt) FILTER (WHERE type='expense'),0)::float8 AS expenses_usdt,
+    COALESCE(SUM(amount_usdt) FILTER (WHERE type='trade_pnl'),0)::float8 AS trade_pnl_usdt,
+    COALESCE(SUM(amount_usdt) FILTER (WHERE type IN ('fee','interest')),0)::float8 AS costs_usdt,
+    COALESCE(SUM(amount_brl) FILTER (WHERE type='income'),0)::float8 AS income_brl
+    FROM financial_ledger WHERE occurred_at>=date_trunc('month',NOW())`)).rows[0];
+  return {entries,summary};
+}
+
+async function addLedgerEntry(entry){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  const result=await db.query(`INSERT INTO financial_ledger(occurred_at,type,category,description,amount_brl,amount_usdt,source,external_id,notes)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,occurred_at`,[entry.occurredAt,entry.type,entry.category,entry.description,entry.amountBrl,entry.amountUsdt,entry.source||'manual',entry.externalId||null,entry.notes||'']);
+  return result.rows[0];
+}
+
+async function deleteLedgerEntry(id){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  await db.query("DELETE FROM financial_ledger WHERE id=$1 AND source='manual'",[id]);
 }
 
 async function saveSnapshot(summary){
@@ -124,4 +165,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder};
+module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry};

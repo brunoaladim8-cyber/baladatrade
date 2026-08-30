@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
-const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder}=require('./db');
+const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -163,6 +163,12 @@ async function publicPrice(symbol){
   return Number(data.price);
 }
 
+function ema(values,period){if(!values.length)return 0;const k=2/(period+1);return values.slice(1).reduce((value,item)=>item*k+value*(1-k),values[0])}
+function atr(candles,period=14){const ranges=candles.map((c,i)=>Math.max(c.high-c.low,i?Math.abs(c.high-candles[i-1].close):0,i?Math.abs(c.low-candles[i-1].close):0));const sample=ranges.slice(-period);return sample.length?sample.reduce((a,b)=>a+b,0)/sample.length:0}
+function rsi(values,period=14){if(values.length<2)return 50;const changes=values.slice(1).map((v,i)=>v-values[i]).slice(-period),gain=changes.reduce((s,v)=>s+Math.max(v,0),0)/changes.length,loss=changes.reduce((s,v)=>s+Math.max(-v,0),0)/changes.length;return loss?100-(100/(1+gain/loss)):100}
+async function publicKlines(symbol,interval,limit=120){const response=await fetch(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),data=await response.json();if(!response.ok)throw new Error(data.msg||'Candles indisponíveis.');return data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5]),quoteVolume:Number(row[7])}))}
+function timeframeReading(candles,label){const closes=candles.map(c=>c.close),last=candles.at(-1),previous=candles.at(-2),ema20=ema(closes.slice(-60),20),ema50=ema(closes.slice(-100),50),atrValue=atr(candles),avgVolume=candles.slice(-21,-1).reduce((s,c)=>s+c.quoteVolume,0)/Math.max(candles.slice(-21,-1).length,1),volumeRatio=avgVolume?last.quoteVolume/avgVolume:0,change=previous?.close?(last.close-previous.close)/previous.close*100:0;return {label,price:last.close,change,ema20,ema50,atr:atrValue,atrPct:last.close?atrValue/last.close*100:0,rsi:rsi(closes),volumeRatio,trend:last.close>ema20&&ema20>ema50?'ALTA':last.close<ema20&&ema20<ema50?'BAIXA':'LATERAL'}}
+
 function summarizeTrades(rows,market){
   const trades=(rows||[]).map(t=>({market,id:t.id,time:Number(t.time),side:t.isBuyer?'BUY':'SELL',price:Number(t.price),quantity:Number(t.qty),quote:Number(t.quoteQty||Number(t.price)*Number(t.qty)),commission:Number(t.commission||0),commissionAsset:t.commissionAsset})).sort((a,b)=>b.time-a.time);
   const aggregate=list=>{const quantity=list.reduce((sum,t)=>sum+t.quantity,0),quote=list.reduce((sum,t)=>sum+t.quote,0);return {count:list.length,quantity,quote,averagePrice:quantity?quote/quantity:0}};
@@ -248,6 +254,14 @@ async function api(req, res, pathname) {
       if(!response.ok)throw new Error(data.msg||'Gráfico indisponível.');
       return json(res,200,{symbol,interval,candles:data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5])}))});
     }
+    if (pathname === '/api/market/pretrade' && req.method === 'GET') {
+      const symbol=String(new URL(req.url,'http://localhost').searchParams.get('symbol')||'').toUpperCase();
+      if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});
+      const [ticker,...sets]=await Promise.all([fetch(`${marketBase()}/api/v3/ticker/24hr?symbol=${symbol}`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Ticker indisponível.');return d}),...['15m','1h','4h'].map(interval=>publicKlines(symbol,interval,120))]);
+      const frames=sets.map((candles,i)=>timeframeReading(candles,['15 minutos','1 hora','4 horas'][i])),price=Number(ticker.lastPrice),low=Number(ticker.lowPrice),high=Number(ticker.highPrice),range=high-low,rangePosition=range?(price-low)/range*100:0,amplitude=low?range/low*100:0,aligned=frames.every(f=>f.trend==='ALTA')?'ALTA':frames.every(f=>f.trend==='BAIXA')?'BAIXA':'MISTA';
+      const warnings=[];if(rangePosition>=90)warnings.push('Preço nos 10% superiores do intervalo de 24h: risco de perseguir alta.');if(amplitude>=10)warnings.push('Amplitude diária acima de 10%: volatilidade extrema.');if(frames[0].volumeRatio>=2)warnings.push('Volume de 15m acima de 2x a média recente.');if(aligned==='MISTA')warnings.push('Períodos não estão alinhados; movimento pode ser apenas ruído curto.');
+      return json(res,200,{symbol,price,open:Number(ticker.openPrice),high,low,change24h:Number(ticker.priceChangePercent),quoteVolume:Number(ticker.quoteVolume),amplitude,rangePosition,distanceHighPct:high?(price-high)/high*100:0,frames,alignment:aligned,warnings,generatedAt:new Date().toISOString()});
+    }
     if (pathname === '/api/binance/trades' && req.method === 'GET') {
       const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();
       if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});
@@ -259,6 +273,14 @@ async function api(req, res, pathname) {
       return json(res,200,{symbol,spot:summarizeTrades(spot,'Spot'),margin:summarizeTrades(margin,'Margem Cross'),warnings,updatedAt:new Date().toISOString()});
     }
     if (pathname === '/api/paper/account' && req.method === 'GET') return json(res,200,await paperSummary());
+    if (pathname === '/api/ledger' && req.method === 'GET') return json(res,200,await ledgerData(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||200)));
+    if (pathname === '/api/ledger' && req.method === 'POST') {
+      const entry=await body(req),type=String(entry.type||''),description=String(entry.description||'').trim(),amountBrl=Number(entry.amountBrl||0),amountUsdt=Number(entry.amountUsdt||0);
+      if(!['expense','trade_pnl','fee','interest','transfer','income'].includes(type)||!description||description.length>160||amountBrl<0||amountUsdt<0||(!amountBrl&&!amountUsdt))return json(res,400,{error:'Lançamento financeiro inválido.'});
+      const saved=await addLedgerEntry({occurredAt:entry.occurredAt||new Date().toISOString(),type,category:String(entry.category||'Outros').slice(0,40),description,amountBrl,amountUsdt,notes:String(entry.notes||'').slice(0,1000)});
+      return json(res,201,{ok:true,saved,ledger:await ledgerData(200)});
+    }
+    if (pathname.startsWith('/api/ledger/') && req.method === 'DELETE') {const id=Number(pathname.split('/').pop());if(!Number.isInteger(id)||id<1)return json(res,400,{error:'ID inválido.'});await deleteLedgerEntry(id);return json(res,200,{ok:true});}
     if (pathname === '/api/paper/order' && req.method === 'POST') {
       const order=await body(req),symbol=String(order.symbol||'').toUpperCase(),side=String(order.side||'').toUpperCase(),amount=Number(order.amount);
       if(!/^[A-Z0-9]{2,16}USDT$/.test(symbol)||!['BUY','SELL'].includes(side)||!(amount>0)||amount>100000)return json(res,400,{error:'Ordem simulada inválida.'});

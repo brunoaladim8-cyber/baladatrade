@@ -1,6 +1,6 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {MNQ,PROP_PROFILES,riskState,positionSize,backtest}=require('../mnq-engine');
+const {MNQ,PROP_PROFILES,riskState,detectSetup,positionSize,backtest}=require('../mnq-engine');
 
 test('MNQ usa especificação correta de ponto e tick',()=>{
   assert.equal(MNQ.pointValue,2);
@@ -36,4 +36,15 @@ test('backtest rejeita série curta sem criar operações',()=>{
   const result=backtest(candles,{riskBudget:100,maxMicros:1});
   assert.equal(result.summary.trades,0);
   assert.equal(result.summary.net,0);
+});
+
+test('stop e take em dólar são convertidos por quantidade e valor do ponto',()=>{
+  const candles=Array.from({length:100},(_,i)=>({time:i,open:100+i,high:101+i,low:99+i,close:100+i,volume:1}));
+  const original=detectSetup(candles,{contracts:2,stopDollar:80,targetDollar:104});
+  if(original.entry){
+    assert.equal(original.riskUsdTotal,80);
+    assert.equal(original.rewardUsdTotal,104);
+    assert.equal(original.stopMode,'DOLLAR');
+    assert.equal(original.targetMode,'DOLLAR');
+  }else assert.ok(['AGUARDANDO_BOS','CONTRA_MACRO','SEM_IMPULSO'].includes(original.state));
 });

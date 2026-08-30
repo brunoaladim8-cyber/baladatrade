@@ -116,8 +116,15 @@ async function portfolioSummary(){
 
 function marketBase(){return 'https://api.binance.com'}
 async function marketRadar(limit=50){
-  const response=await fetch(`${marketBase()}/api/v3/ticker/24hr`);
+  const [response,exchangeResponse,isolatedResult]=await Promise.all([
+    fetch(`${marketBase()}/api/v3/ticker/24hr`),
+    fetch(`${marketBase()}/api/v3/exchangeInfo`),
+    signedBinance('/sapi/v1/margin/isolated/allPairs').catch(()=>[])
+  ]);
   if(!response.ok)throw new Error('Radar de mercado indisponível.');
+  const exchange=exchangeResponse.ok?await exchangeResponse.json():{symbols:[]};
+  const marginSymbols=new Set((exchange.symbols||[]).filter(s=>s.isMarginTradingAllowed||s.permissions?.includes('MARGIN')).map(s=>s.symbol));
+  const isolatedSymbols=new Set((Array.isArray(isolatedResult)?isolatedResult:isolatedResult.rows||[]).filter(s=>s.isMarginTrade!==false).map(s=>s.symbol));
   const blocked=/^(USDC|FDUSD|TUSD|USDP|DAI|EUR|BRL|TRY|BIDR|AEUR|BUSD)$/;
   const leveraged=/(UP|DOWN|BULL|BEAR)$/;
   const rows=(await response.json()).filter(t=>t.symbol.endsWith('USDT')).map(t=>({
@@ -132,7 +139,8 @@ async function marketRadar(limit=50){
     const activity=Math.min(10,Math.log10(row.trades+1));
     const score=Math.round(Math.max(0,Math.min(100,volumeScore+momentumScore+position+activity)));
     const state=score>=85?'Aquecida':score>=70?'Força':score>=50?'Observação':score>=30?'Fraca':'Fraqueza';
-    return {...row,score,state};
+    const crossMargin=marginSymbols.has(row.symbol),isolatedMargin=isolatedSymbols.has(row.symbol);
+    return {...row,score,state,crossMargin,isolatedMargin,maxLeverage:isolatedMargin?10:crossMargin?5:1};
   }).sort((a,b)=>b.score-a.score);
 }
 
@@ -153,6 +161,12 @@ async function publicPrice(symbol){
   const response=await fetch(`${marketBase()}/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`),data=await response.json();
   if(!response.ok||!Number(data.price))throw new Error(data.msg||'Par não encontrado na Binance.');
   return Number(data.price);
+}
+
+function summarizeTrades(rows,market){
+  const trades=(rows||[]).map(t=>({market,id:t.id,time:Number(t.time),side:t.isBuyer?'BUY':'SELL',price:Number(t.price),quantity:Number(t.qty),quote:Number(t.quoteQty||Number(t.price)*Number(t.qty)),commission:Number(t.commission||0),commissionAsset:t.commissionAsset})).sort((a,b)=>b.time-a.time);
+  const aggregate=list=>{const quantity=list.reduce((sum,t)=>sum+t.quantity,0),quote=list.reduce((sum,t)=>sum+t.quote,0);return {count:list.length,quantity,quote,averagePrice:quantity?quote/quantity:0}};
+  return {market,trades,buy:aggregate(trades.filter(t=>t.side==='BUY')),sell:aggregate(trades.filter(t=>t.side==='SELL'))};
 }
 
 async function paperSummary(){
@@ -233,6 +247,16 @@ async function api(req, res, pathname) {
       const response=await fetch(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=120`),data=await response.json();
       if(!response.ok)throw new Error(data.msg||'Gráfico indisponível.');
       return json(res,200,{symbol,interval,candles:data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5])}))});
+    }
+    if (pathname === '/api/binance/trades' && req.method === 'GET') {
+      const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();
+      if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});
+      const [spot,margin]=await Promise.all([
+        signedBinance('/api/v3/myTrades','GET',{symbol,limit:'500'}).catch(error=>Object.assign([],{_error:error.message})),
+        signedBinance('/sapi/v1/margin/myTrades','GET',{symbol,limit:'500'}).catch(error=>Object.assign([],{_error:error.message}))
+      ]);
+      const warnings=[];if(spot._error)warnings.push(`Spot: ${spot._error}`);if(margin._error)warnings.push(`Margem: ${margin._error}`);
+      return json(res,200,{symbol,spot:summarizeTrades(spot,'Spot'),margin:summarizeTrades(margin,'Margem Cross'),warnings,updatedAt:new Date().toISOString()});
     }
     if (pathname === '/api/paper/account' && req.method === 'GET') return json(res,200,await paperSummary());
     if (pathname === '/api/paper/order' && req.method === 'POST') {

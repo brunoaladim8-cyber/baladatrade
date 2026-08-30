@@ -73,11 +73,12 @@ async function signedBinance(endpoint, method='GET', params={}) {
 }
 
 async function portfolioSummary(){
-  const [account,earnResult,lockedResult,fundingResult]=await Promise.all([
+  const [account,earnResult,lockedResult,fundingResult,marginResult]=await Promise.all([
     signedBinance('/api/v3/account'),
     signedBinance('/sapi/v1/simple-earn/flexible/position','GET',{current:'1',size:'100'}).catch(error=>({rows:[],_error:error.message})),
     signedBinance('/sapi/v1/simple-earn/locked/position','GET',{current:'1',size:'100'}).catch(error=>({rows:[],_error:error.message})),
-    signedBinance('/sapi/v1/asset/get-funding-asset','POST').catch(error=>Object.assign([],{_error:error.message}))
+    signedBinance('/sapi/v1/asset/get-funding-asset','POST').catch(error=>Object.assign([],{_error:error.message})),
+    signedBinance('/sapi/v1/margin/account').catch(error=>({_error:error.message,userAssets:[]}))
   ]);
   const response=await fetch(`${binanceConfig().base}/api/v3/ticker/24hr`);
   if(!response.ok)throw new Error('Não foi possível consultar preços da Binance.');
@@ -99,15 +100,18 @@ async function portfolioSummary(){
     if(!price){ticker=bySymbol.get(`${item.asset}BTC`);price=Number(ticker?.lastPrice||0)*btcUsdt;changePct=Number(ticker?.priceChangePercent||0);priceSource='BTC';}
     return {...item,price,value:price?item.quantity*price:0,changePct,priced:Boolean(price),priceSource:price?priceSource:null};
   }).sort((a,b)=>b.value-a.value||a.asset.localeCompare(b.asset));
-  const total=assets.reduce((sum,item)=>sum+item.value,0);
+  const holdingsTotal=assets.reduce((sum,item)=>sum+item.value,0),marginNet=Number(marginResult.totalNetAssetOfBtc||0)*btcUsdt,total=holdingsTotal+marginNet;
   const marketPreviousTotal=assets.reduce((sum,item)=>{const divisor=1+item.changePct/100;return sum+(divisor>0?item.value/divisor:item.value)},0);
   const marketChangeValue=total-marketPreviousTotal,marketChangePct=marketPreviousTotal?marketChangeValue/marketPreviousTotal*100:0;
   const walletWarnings=[];
   if(earnResult._error)walletWarnings.push('Simple Earn não pôde ser consultado com as permissões atuais.');
   if(lockedResult._error)walletWarnings.push('Earn bloqueado não pôde ser consultado com as permissões atuais.');
   if(fundingResult._error)walletWarnings.push('Funding não pôde ser consultado com as permissões atuais.');
+  if(marginResult._error)walletWarnings.push('Margem não pôde ser consultada: dívidas podem não estar incluídas.');
   const walletTotals={};for(const item of assets)for(const [wallet,quantity] of Object.entries(item.walletAmounts))walletTotals[wallet]=(walletTotals[wallet]||0)+(item.price*quantity);
-  return {total,changeValue:0,changePct:0,marketChangeValue,marketChangePct,assets,walletTotals,walletWarnings,partial:walletWarnings.length>0,capturedAt:new Date().toISOString()};
+  if(!marginResult._error)walletTotals.Margem=marginNet;
+  const margin={available:!marginResult._error,level:Number(marginResult.marginLevel||0),assetsUsdt:Number(marginResult.totalAssetOfBtc||0)*btcUsdt,debtUsdt:Number(marginResult.totalLiabilityOfBtc||0)*btcUsdt,netUsdt:marginNet,debts:(marginResult.userAssets||[]).filter(x=>Number(x.borrowed)+Number(x.interest)>0).map(x=>({asset:x.asset,borrowed:Number(x.borrowed),interest:Number(x.interest),netAsset:Number(x.netAsset)}))};
+  return {total,changeValue:0,changePct:0,marketChangeValue,marketChangePct,assets,walletTotals,walletWarnings,margin,partial:walletWarnings.length>0,capturedAt:new Date().toISOString()};
 }
 
 function marketBase(){return 'https://api.binance.com'}
@@ -175,6 +179,7 @@ async function marketAgentAnalysis(){
 
 function portfolioAlerts(summary){
   const alerts=[];
+  if(summary.margin?.debtUsdt>0)alerts.push({level:summary.margin.level&&summary.margin.level<1.5?'danger':'warning',asset:'MARGEM',message:`Dívida de ${summary.margin.debtUsdt.toFixed(2)} USDT · nível ${summary.margin.level.toFixed(2)}. Quite ou reduza antes de operar.`});
   for(const asset of summary.assets){
     const concentration=summary.total?asset.value/summary.total*100:0;
     if(concentration>=60)alerts.push({level:'warning',asset:asset.asset,message:`${asset.asset} representa ${concentration.toFixed(1)}% da carteira.`});

@@ -143,6 +143,13 @@ async function deleteLedgerEntry(id){
   await db.query("DELETE FROM financial_ledger WHERE id=$1 AND source='manual'",[id]);
 }
 
+async function importLedgerEntries(entries){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  let imported=0,duplicates=0;
+  for(const entry of entries){const result=await db.query(`INSERT INTO financial_ledger(occurred_at,type,category,description,amount_brl,amount_usdt,source,external_id,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(source,external_id) DO NOTHING RETURNING id`,[entry.occurredAt,entry.type,entry.category,entry.description,entry.amountBrl||0,entry.amountUsdt||0,entry.source,entry.externalId,entry.notes||'']);result.rowCount?imported++:duplicates++}
+  return {imported,duplicates,total:entries.length};
+}
+
 async function saveSnapshot(summary){
   const db=database();if(!db)throw new Error('Banco de dados não configurado.');
   const client=await db.connect();
@@ -204,4 +211,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory};
+module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory};

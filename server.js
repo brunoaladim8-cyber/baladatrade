@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
-const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory}=require('./db');
+const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -163,6 +163,21 @@ async function publicPrice(symbol){
   return Number(data.price);
 }
 
+async function assetValueUsdt(asset,amount){
+  if(['USDT','USDC','FDUSD','TUSD','USDP','DAI'].includes(asset))return amount;
+  if(asset==='BRL'){const brlPerUsdt=await publicPrice('USDTBRL');return brlPerUsdt?amount/brlPerUsdt:0}
+  return amount*await publicPrice(`${asset}USDT`);
+}
+
+async function syncBinancePay(){
+  const endTime=Date.now(),startTime=endTime-89*24*60*60*1000;
+  const response=await signedBinance('/sapi/v1/pay/transactions','GET',{startTime:String(startTime),endTime:String(endTime),limit:'100'}),rows=Array.isArray(response)?response:response.data||response.rows||[];
+  const payRows=rows.filter(item=>String(item.orderType||'').toUpperCase()==='PAY');
+  const entries=[];
+  for(const item of payRows){const asset=String(item.currency||item.fundsDetail?.[0]?.currency||'USDT').toUpperCase(),amount=Math.abs(Number(item.amount||item.fundsDetail?.reduce((sum,row)=>sum+Number(row.amount||0),0)||0));if(!amount||!item.transactionId)continue;let amountUsdt=0;try{amountUsdt=await assetValueUsdt(asset,amount)}catch{}entries.push({occurredAt:new Date(Number(item.transactionTime||Date.now())).toISOString(),type:'expense',category:'Cartão/Binance Pay',description:`Pagamento Binance · ${asset}`,amountBrl:asset==='BRL'?amount:0,amountUsdt,source:'binance_pay',externalId:String(item.transactionId),notes:`Importado automaticamente. Valor original: ${amount} ${asset}. Conversão USDT usa cotação no momento da sincronização.`})}
+  return {...await importLedgerEntries(entries),received:rows.length,eligible:payRows.length,periodDays:89,warning:'A API oficial expõe Binance Pay. Compras exclusivas do cartão que não aparecem como PAY precisam de extrato/CSV.'};
+}
+
 function ema(values,period){if(!values.length)return 0;const k=2/(period+1);return values.slice(1).reduce((value,item)=>item*k+value*(1-k),values[0])}
 function atr(candles,period=14){const ranges=candles.map((c,i)=>Math.max(c.high-c.low,i?Math.abs(c.high-candles[i-1].close):0,i?Math.abs(c.low-candles[i-1].close):0));const sample=ranges.slice(-period);return sample.length?sample.reduce((a,b)=>a+b,0)/sample.length:0}
 function rsi(values,period=14){if(values.length<2)return 50;const changes=values.slice(1).map((v,i)=>v-values[i]).slice(-period),gain=changes.reduce((s,v)=>s+Math.max(v,0),0)/changes.length,loss=changes.reduce((s,v)=>s+Math.max(-v,0),0)/changes.length;return loss?100-(100/(1+gain/loss)):100}
@@ -289,6 +304,7 @@ async function api(req, res, pathname) {
     }
     if (pathname === '/api/paper/account' && req.method === 'GET') return json(res,200,await paperSummary());
     if (pathname === '/api/ledger' && req.method === 'GET') return json(res,200,await ledgerData(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||200)));
+    if (pathname === '/api/ledger/sync-binance' && req.method === 'POST') return json(res,200,{ok:true,...await syncBinancePay(),ledger:await ledgerData(200)});
     if (pathname === '/api/ledger' && req.method === 'POST') {
       const entry=await body(req),type=String(entry.type||''),description=String(entry.description||'').trim(),amountBrl=Number(entry.amountBrl||0),amountUsdt=Number(entry.amountUsdt||0);
       if(!['expense','trade_pnl','fee','interest','transfer','income'].includes(type)||!description||description.length>160||amountBrl<0||amountUsdt<0||(!amountBrl&&!amountUsdt))return json(res,400,{error:'Lançamento financeiro inválido.'});

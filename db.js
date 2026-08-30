@@ -75,8 +75,47 @@ async function initDatabase(){
       UNIQUE(source,external_id)
     );
     CREATE INDEX IF NOT EXISTS financial_ledger_occurred_idx ON financial_ledger(occurred_at DESC);
+    CREATE TABLE IF NOT EXISTS market_scans (
+      id BIGSERIAL PRIMARY KEY,
+      symbol VARCHAR(24) NOT NULL,
+      price NUMERIC(30,12) NOT NULL,
+      change_24h NUMERIC(12,6) NOT NULL,
+      high_24h NUMERIC(30,12) NOT NULL,
+      low_24h NUMERIC(30,12) NOT NULL,
+      amplitude_pct NUMERIC(12,6) NOT NULL,
+      range_position_pct NUMERIC(12,6) NOT NULL,
+      risk_score SMALLINT NOT NULL,
+      alignment VARCHAR(12) NOT NULL,
+      spread_pct NUMERIC(12,8) NOT NULL,
+      book_imbalance_pct NUMERIC(12,6) NOT NULL,
+      payload JSONB NOT NULL,
+      captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS market_scans_symbol_time_idx ON market_scans(symbol,captured_at DESC);
+    CREATE TABLE IF NOT EXISTS trade_plans (
+      id BIGSERIAL PRIMARY KEY,
+      symbol VARCHAR(24) NOT NULL,
+      direction VARCHAR(5) NOT NULL CHECK(direction IN ('LONG','SHORT')),
+      entry NUMERIC(30,12) NOT NULL,
+      stop NUMERIC(30,12) NOT NULL,
+      target NUMERIC(30,12) NOT NULL,
+      capital_usdt NUMERIC(24,8) NOT NULL,
+      risk_pct NUMERIC(8,4) NOT NULL,
+      risk_usdt NUMERIC(24,8) NOT NULL,
+      quantity NUMERIC(36,18) NOT NULL,
+      leverage SMALLINT NOT NULL,
+      risk_reward NUMERIC(12,6) NOT NULL,
+      status VARCHAR(16) NOT NULL DEFAULT 'PLANNED',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS trade_plans_symbol_time_idx ON trade_plans(symbol,created_at DESC);
   `);return true;
 }
+
+async function saveMarketScan(scan){const db=database();if(!db)return null;const result=await db.query(`INSERT INTO market_scans(symbol,price,change_24h,high_24h,low_24h,amplitude_pct,range_position_pct,risk_score,alignment,spread_pct,book_imbalance_pct,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,captured_at`,[scan.symbol,scan.price,scan.change24h,scan.high,scan.low,scan.amplitude,scan.rangePosition,scan.risk.score,scan.alignment,scan.orderBook.spreadPct,scan.orderBook.imbalancePct,scan]);return result.rows[0]}
+async function marketScanHistory(symbol,limit=50){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`SELECT id,symbol,price::float8,change_24h::float8,high_24h::float8,low_24h::float8,amplitude_pct::float8,range_position_pct::float8,risk_score,alignment,spread_pct::float8,book_imbalance_pct::float8,captured_at FROM market_scans WHERE symbol=$1 ORDER BY captured_at DESC LIMIT $2`,[symbol,Math.min(Math.max(limit,1),500)])).rows}
+async function saveTradePlan(plan){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`INSERT INTO trade_plans(symbol,direction,entry,stop,target,capital_usdt,risk_pct,risk_usdt,quantity,leverage,risk_reward) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id,created_at`,[plan.symbol,plan.direction,plan.entry,plan.stop,plan.target,plan.capital,plan.riskPct,plan.riskMoney,plan.quantity,plan.leverage,plan.riskReward])).rows[0]}
+async function tradePlanHistory(symbol,limit=50){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`SELECT id,symbol,direction,entry::float8,stop::float8,target::float8,capital_usdt::float8,risk_pct::float8,risk_usdt::float8,quantity::float8,leverage,risk_reward::float8,status,created_at FROM trade_plans WHERE ($1='' OR symbol=$1) ORDER BY created_at DESC LIMIT $2`,[symbol,Math.min(Math.max(limit,1),500)])).rows}
 
 async function ledgerData(limit=200){
   const db=database();if(!db)throw new Error('Banco de dados não configurado.');
@@ -165,4 +204,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry};
+module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory};

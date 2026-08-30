@@ -126,6 +126,21 @@ async function initDatabase(){
       UNIQUE(fingerprint)
     );
     CREATE INDEX IF NOT EXISTS alert_events_created_idx ON alert_events(created_at DESC);
+    CREATE TABLE IF NOT EXISTS position_watches (
+      id BIGSERIAL PRIMARY KEY,
+      symbol VARCHAR(24) NOT NULL,
+      direction VARCHAR(5) NOT NULL CHECK(direction IN ('LONG','SHORT')),
+      entry NUMERIC(30,12) NOT NULL,
+      quantity NUMERIC(36,18) NOT NULL,
+      stop NUMERIC(30,12),
+      target NUMERIC(30,12),
+      trailing_pct NUMERIC(8,4),
+      peak_price NUMERIC(30,12) NOT NULL,
+      status VARCHAR(12) NOT NULL DEFAULT 'ACTIVE',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS position_watches_active_idx ON position_watches(status,updated_at DESC);
   `);return true;
 }
 
@@ -136,6 +151,9 @@ async function tradePlanHistory(symbol,limit=50){const db=database();if(!db)thro
 async function closeTradePlan(id,status,price,pnl,closedAt){const db=database();if(!db)return;await db.query('UPDATE trade_plans SET status=$2,outcome_price=$3,outcome_usdt=$4,closed_at=$5 WHERE id=$1 AND status=\'PLANNED\'',[id,status,price,pnl,closedAt])}
 async function saveAlerts(alerts){const db=database();if(!db)return {saved:0};let saved=0;for(const item of alerts){const result=await db.query(`INSERT INTO alert_events(kind,level,symbol,title,message,fingerprint,payload) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(fingerprint) DO NOTHING`,[item.kind,item.level,item.symbol||null,item.title,item.message,item.fingerprint,item.payload||{}]);saved+=result.rowCount}return {saved}}
 async function alertHistory(limit=100){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query('SELECT id,kind,level,symbol,title,message,payload,acknowledged_at,created_at FROM alert_events ORDER BY created_at DESC LIMIT $1',[Math.min(Math.max(limit,1),500)])).rows}
+async function savePositionWatch(watch){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`INSERT INTO position_watches(symbol,direction,entry,quantity,stop,target,trailing_pct,peak_price) VALUES($1,$2,$3,$4,$5,$6,$7,$3) RETURNING id,created_at`,[watch.symbol,watch.direction,watch.entry,watch.quantity,watch.stop||null,watch.target||null,watch.trailingPct||null])).rows[0]}
+async function positionWatches(){const db=database();if(!db)throw new Error('Banco de dados não configurado.');return (await db.query(`SELECT id,symbol,direction,entry::float8,quantity::float8,stop::float8,target::float8,trailing_pct::float8,peak_price::float8,status,created_at,updated_at FROM position_watches WHERE status='ACTIVE' ORDER BY created_at DESC`)).rows}
+async function updatePositionWatch(id,peakPrice,status='ACTIVE'){const db=database();if(!db)return;await db.query('UPDATE position_watches SET peak_price=$2,status=$3,updated_at=NOW() WHERE id=$1',[id,peakPrice,status])}
 
 async function ledgerData(limit=200){
   const db=database();if(!db)throw new Error('Banco de dados não configurado.');
@@ -231,4 +249,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory};
+module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch};

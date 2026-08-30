@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
+const {PROP_PROFILES,ACCOUNT_RULES,riskState,detectSetup,positionSize,backtest}=require('./mnq-engine');
 const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch}=require('./db');
 
 const root = path.join(__dirname, 'public');
@@ -204,6 +205,14 @@ function ema(values,period){if(!values.length)return 0;const k=2/(period+1);retu
 function atr(candles,period=14){const ranges=candles.map((c,i)=>Math.max(c.high-c.low,i?Math.abs(c.high-candles[i-1].close):0,i?Math.abs(c.low-candles[i-1].close):0));const sample=ranges.slice(-period);return sample.length?sample.reduce((a,b)=>a+b,0)/sample.length:0}
 function rsi(values,period=14){if(values.length<2)return 50;const changes=values.slice(1).map((v,i)=>v-values[i]).slice(-period),gain=changes.reduce((s,v)=>s+Math.max(v,0),0)/changes.length,loss=changes.reduce((s,v)=>s+Math.max(-v,0),0)/changes.length;return loss?100-(100/(1+gain/loss)):100}
 async function publicKlines(symbol,interval,limit=120){const response=await fetch(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),data=await response.json();if(!response.ok)throw new Error(data.msg||'Candles indisponíveis.');return data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5]),quoteVolume:Number(row[7])}))}
+
+async function mnqCandles(){
+  const end=Math.floor(Date.now()/1000),start=end-59*24*60*60,url=`https://query1.finance.yahoo.com/v8/finance/chart/MNQ=F?period1=${start}&period2=${end}&interval=15m&includePrePost=true`;
+  const response=await fetch(url,{headers:{'user-agent':'BaladaTrade/1.0'}}),payload=await response.json(),result=payload.chart?.result?.[0];
+  if(!response.ok||!result)throw new Error(payload.chart?.error?.description||'Candles do MNQ indisponíveis no provedor público.');
+  const quote=result.indicators?.quote?.[0]||{};
+  return (result.timestamp||[]).map((time,i)=>({time:time*1000,open:Number(quote.open?.[i]),high:Number(quote.high?.[i]),low:Number(quote.low?.[i]),close:Number(quote.close?.[i]),volume:Number(quote.volume?.[i]||0)})).filter(c=>[c.open,c.high,c.low,c.close].every(Number.isFinite));
+}
 function timeframeReading(candles,label){const closes=candles.map(c=>c.close),last=candles.at(-1),previous=candles.at(-2),ema20=ema(closes.slice(-60),20),ema50=ema(closes.slice(-100),50),atrValue=atr(candles),avgVolume=candles.slice(-21,-1).reduce((s,c)=>s+c.quoteVolume,0)/Math.max(candles.slice(-21,-1).length,1),volumeRatio=avgVolume?last.quoteVolume/avgVolume:0,change=previous?.close?(last.close-previous.close)/previous.close*100:0;return {label,price:last.close,change,ema20,ema50,atr:atrValue,atrPct:last.close?atrValue/last.close*100:0,rsi:rsi(closes),volumeRatio,trend:last.close>ema20&&ema20>ema50?'ALTA':last.close<ema20&&ema20<ema50?'BAIXA':'LATERAL'}}
 
 function summarizeTrades(rows,market){
@@ -277,6 +286,19 @@ async function api(req, res, pathname) {
       return json(res,200,{...complete,alerts:portfolioAlerts(complete),snapshotId:saved.id});
     }
     if (pathname === '/api/portfolio/history' && req.method === 'GET') return json(res,200,{history:await history(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||30))});
+    if (pathname === '/api/mnq/profiles' && req.method === 'GET') return json(res,200,{profiles:PROP_PROFILES,accountRules:ACCOUNT_RULES,execution:'SIMULATION_ONLY',updatedAt:new Date().toISOString()});
+    if (pathname === '/api/mnq/analyze' && req.method === 'POST') {
+      const data=await body(req),candles=Array.isArray(data.candles)&&data.candles.length?data.candles:await mnqCandles(),profile=String(data.profile||'tpt_test'),accountSize=Number(data.accountSize||50000),riskBudget=Number(data.riskBudget||100);
+      if(!PROP_PROFILES[profile]||!ACCOUNT_RULES[accountSize]||!(riskBudget>0))return json(res,400,{error:'Configuração MNQ inválida.'});
+      const setup=detectSetup(candles,{bosBufferAtr:Number(data.bosBufferAtr||.1)}),risk=riskState({profile,accountSize,startBalance:Number(data.startBalance||accountSize),balance:Number(data.balance||accountSize),openPnl:Number(data.openPnl||0),peakEquity:Number(data.peakEquity||data.balance||accountSize),peakClosedBalance:Number(data.peakClosedBalance||data.balance||accountSize),sessionStartBalance:Number(data.sessionStartBalance||data.balance||accountSize),dllEnabled:data.dllEnabled!==false,dailyLoss:Number(data.dailyLoss||0)}),contracts=positionSize(setup,riskBudget,Math.min(risk.maxMicros,Number(data.maxMicros||risk.maxMicros)));
+      const blockers=[];if(risk.blocked)blockers.push('Limite de perda da conta atingido.');if(risk.warning)blockers.push('Menos de 20% do drawdown disponível.');if(setup.state!=='ENTRADA_CONFIRMADA')blockers.push(setup.reason);if(!contracts)blockers.push('Risco disponível não comporta 1 MNQ.');
+      return json(res,200,{instrument:'MNQ',timeframe:'15m',setup,risk,contracts,riskBudget,allowed:blockers.length===0,blockers,candles:candles.slice(-180),execution:'SIMULATION_ONLY',updatedAt:new Date().toISOString()});
+    }
+    if (pathname === '/api/mnq/backtest' && req.method === 'POST') {
+      const data=await body(req),candles=Array.isArray(data.candles)&&data.candles.length?data.candles:await mnqCandles(),riskBudget=Number(data.riskBudget||100),maxMicros=Math.max(1,Math.min(100,Number(data.maxMicros||1)));
+      if(!(riskBudget>0))return json(res,400,{error:'Risco por operação inválido.'});
+      return json(res,200,{instrument:'MNQ',timeframe:'15m',...backtest(candles,{riskBudget,maxMicros,bosBufferAtr:Number(data.bosBufferAtr||.1)}),candles:candles.length,execution:'SIMULATION_ONLY',warning:'Resultado histórico não garante resultado futuro. Dados públicos podem conter atrasos ou lacunas.'});
+    }
     if (pathname === '/api/market/radar' && req.method === 'GET') {const coins=await marketRadar(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50));return json(res,200,{coins,alerts:marketAlerts(coins),updatedAt:new Date().toISOString()});}
     if (pathname === '/api/market/symbols' && req.method === 'GET') {
       const response=await fetch(`${marketBase()}/api/v3/exchangeInfo`),data=await response.json();

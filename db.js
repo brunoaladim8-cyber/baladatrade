@@ -81,6 +81,12 @@ async function history(limit=30){
   return result.rows;
 }
 
+async function portfolioBaseline(){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  const result=await db.query('SELECT total_usdt::float8,captured_at FROM portfolio_snapshots ORDER BY captured_at DESC LIMIT 1');
+  return result.rows[0]||null;
+}
+
 async function paperData(){
   const db=database();if(!db)throw new Error('Banco de dados não configurado.');
   const [account,positions,orders]=await Promise.all([
@@ -118,4 +124,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,saveSnapshot,history,paperData,paperOrder};
+module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder};

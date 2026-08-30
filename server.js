@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
-const {initDatabase,saveSnapshot,history,paperData,paperOrder}=require('./db');
+const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -100,14 +100,14 @@ async function portfolioSummary(){
     return {...item,price,value:price?item.quantity*price:0,changePct,priced:Boolean(price),priceSource:price?priceSource:null};
   }).sort((a,b)=>b.value-a.value||a.asset.localeCompare(b.asset));
   const total=assets.reduce((sum,item)=>sum+item.value,0);
-  const previousTotal=assets.reduce((sum,item)=>sum+(item.value/(1+item.changePct/100)||item.value),0);
-  const changeValue=total-previousTotal,changePct=previousTotal?changeValue/previousTotal*100:0;
+  const marketPreviousTotal=assets.reduce((sum,item)=>{const divisor=1+item.changePct/100;return sum+(divisor>0?item.value/divisor:item.value)},0);
+  const marketChangeValue=total-marketPreviousTotal,marketChangePct=marketPreviousTotal?marketChangeValue/marketPreviousTotal*100:0;
   const walletWarnings=[];
   if(earnResult._error)walletWarnings.push('Simple Earn não pôde ser consultado com as permissões atuais.');
   if(lockedResult._error)walletWarnings.push('Earn bloqueado não pôde ser consultado com as permissões atuais.');
   if(fundingResult._error)walletWarnings.push('Funding não pôde ser consultado com as permissões atuais.');
   const walletTotals={};for(const item of assets)for(const [wallet,quantity] of Object.entries(item.walletAmounts))walletTotals[wallet]=(walletTotals[wallet]||0)+(item.price*quantity);
-  return {total,changeValue,changePct,assets,walletTotals,walletWarnings,capturedAt:new Date().toISOString()};
+  return {total,changeValue:0,changePct:0,marketChangeValue,marketChangePct,assets,walletTotals,walletWarnings,partial:walletWarnings.length>0,capturedAt:new Date().toISOString()};
 }
 
 function marketBase(){return 'https://api.binance.com'}
@@ -208,8 +208,11 @@ async function api(req, res, pathname) {
     }
     if (pathname === '/api/portfolio/refresh' && req.method === 'POST') {
       const summary=await portfolioSummary();
-      const saved=await saveSnapshot(summary);
-      return json(res,200,{...summary,alerts:portfolioAlerts(summary),snapshotId:saved.id});
+      const baseline=await portfolioBaseline(),changeValue=baseline?summary.total-baseline.total_usdt:0,changePct=baseline?.total_usdt?changeValue/baseline.total_usdt*100:0;
+      const complete={...summary,changeValue,changePct,comparisonAt:baseline?.captured_at||null};
+      if(complete.partial)return json(res,206,{...complete,alerts:portfolioAlerts(complete),snapshotId:null,integrityWarning:'Leitura parcial: o histórico não foi alterado para evitar apagar ou distorcer dados.'});
+      const saved=await saveSnapshot(complete);
+      return json(res,200,{...complete,alerts:portfolioAlerts(complete),snapshotId:saved.id});
     }
     if (pathname === '/api/portfolio/history' && req.method === 'GET') return json(res,200,{history:await history(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||30))});
     if (pathname === '/api/market/radar' && req.method === 'GET') {const coins=await marketRadar(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50));return json(res,200,{coins,alerts:marketAlerts(coins),updatedAt:new Date().toISOString()});}

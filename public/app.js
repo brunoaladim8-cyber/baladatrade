@@ -57,3 +57,4 @@ function drawMarketChart(candles){currentCandles=candles;chartCanvas.style.displ
 $('#loadChart').onclick=loadMarketChart;$('#favoriteSymbol').onclick=toggleFavorite;$('#refreshMarkets').onclick=()=>loadMarkets(true);
 if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js');
 render();
+$('#holdingChange').previousElementSibling.textContent='DESDE A ÚLTIMA LEITURA';

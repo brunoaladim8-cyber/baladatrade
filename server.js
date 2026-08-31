@@ -3,8 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
-const {PROP_PROFILES,ACCOUNT_RULES,riskState,detectSetup,backtest}=require('./mnq-engine');
-const {initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch}=require('./db');
+const {PROP_PROFILES,ACCOUNT_RULES,TPT_RULES,LUCID_RULES,riskState,detectSetup,backtest}=require('./mnq-engine');
+const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -116,6 +116,7 @@ async function portfolioSummary(){
 }
 
 function marketBase(){return 'https://api.binance.com'}
+function normalizeMarketSymbol(value){const clean=String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(!clean)return'BTCUSDT';const quote=clean.match(/(USDT|USDC|FDUSD|TUSD|BTC|ETH|BNB|BRL)$/)?.[1];return quote&&clean.length>quote.length?clean:`${clean}USDT`}
 async function marketRadar(limit=50){
   const [response,exchangeResponse,isolatedResult]=await Promise.all([
     fetch(`${marketBase()}/api/v3/ticker/24hr`),
@@ -278,6 +279,7 @@ async function api(req, res, pathname) {
   if (!authorized(req)) return json(res, 401, {error:'Não autorizado'});
   const cfg = binanceConfig();
   if (pathname === '/api/binance/status') return json(res, 200, {configured:Boolean(cfg.key&&cfg.secret), environment:cfg.base.includes('testnet')?'testnet':'real', liveEnabled:cfg.live, maxOrderNotional:cfg.max});
+  if (pathname === '/api/system/health' && req.method === 'GET') return json(res,200,{app:true,database:await databaseHealth(),marketFeed:'Binance público',updatedAt:new Date().toISOString()});
   try {
     if (pathname === '/api/binance/account' && req.method === 'GET') {
       const account = await signedBinance('/api/v3/account');
@@ -292,13 +294,13 @@ async function api(req, res, pathname) {
       return json(res,200,{...complete,alerts:portfolioAlerts(complete),snapshotId:saved.id});
     }
     if (pathname === '/api/portfolio/history' && req.method === 'GET') return json(res,200,{history:await history(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||30))});
-    if (pathname === '/api/mnq/profiles' && req.method === 'GET') return json(res,200,{profiles:PROP_PROFILES,accountRules:ACCOUNT_RULES,execution:'SIMULATION_ONLY',updatedAt:new Date().toISOString()});
+    if (pathname === '/api/mnq/profiles' && req.method === 'GET') return json(res,200,{profiles:PROP_PROFILES,ruleSets:{tpt:TPT_RULES,lucid:LUCID_RULES},contract:{symbol:'MNQ',pointValue:2,tickSize:.25,tickValue:.5},execution:'SIMULATION_ONLY',updatedAt:new Date().toISOString()});
     if (pathname === '/api/mnq/analyze' && req.method === 'POST') {
       const data=await body(req),candles=Array.isArray(data.candles)&&data.candles.length?data.candles:await mnqCandles(),profile=String(data.profile||'tpt_test'),accountSize=Number(data.accountSize||50000),requestedContracts=Math.max(1,Math.floor(Number(data.contracts)||1)),stopDollar=Number(data.stopDollar||100),targetDollar=Number(data.targetDollar||130),riskBudget=stopDollar;
       if(!PROP_PROFILES[profile]||!ACCOUNT_RULES[accountSize]||!(stopDollar>0)||!(targetDollar>0))return json(res,400,{error:'Stop e take em dólar devem ser maiores que zero.'});
       const setup=detectSetup(candles,{bosBufferAtr:Number(data.bosBufferAtr||.1),contracts:requestedContracts,stopDollar,targetDollar}),risk=riskState({profile,accountSize,startBalance:Number(data.startBalance||accountSize),balance:Number(data.balance||accountSize),openPnl:Number(data.openPnl||0),peakEquity:Number(data.peakEquity||data.balance||accountSize),peakClosedBalance:Number(data.peakClosedBalance||data.balance||accountSize),sessionStartBalance:Number(data.sessionStartBalance||data.balance||accountSize),dllEnabled:data.dllEnabled!==false,dailyLoss:Number(data.dailyLoss||0)}),contracts=Math.min(requestedContracts,risk.maxMicros);
-      const blockers=[];if(risk.blocked)blockers.push('Limite de perda da conta atingido.');if(risk.warning)blockers.push('Menos de 20% do drawdown disponível.');if(requestedContracts>risk.maxMicros)blockers.push(`O perfil permite no máximo ${risk.maxMicros} micros.`);if(setup.state!=='ENTRADA_CONFIRMADA')blockers.push(setup.reason);if(setup.state==='ENTRADA_CONFIRMADA'&&setup.riskUsdTotal>riskBudget)blockers.push(`Stop total de US$ ${setup.riskUsdTotal.toFixed(2)} supera o risco por operação.`);if(setup.state==='ENTRADA_CONFIRMADA'&&setup.riskUsdTotal>risk.remaining)blockers.push('O stop ultrapassa o drawdown restante da conta.');
-      return json(res,200,{instrument:'MNQ',timeframe:'15m',setup,risk,contracts,riskBudget,allowed:blockers.length===0,blockers,candles:candles.slice(-180),execution:'SIMULATION_ONLY',updatedAt:new Date().toISOString()});
+      const blockers=[];if(risk.blocked)blockers.push('Limite de perda da conta atingido.');if(risk.warning)blockers.push('Menos de 20% do drawdown disponível.');if(requestedContracts>risk.maxMicros)blockers.push(`O perfil permite no máximo ${risk.maxMicros} micros.`);if(data.newsWindow&&risk.newsAllowed===false)blockers.push('Janela de notícia proibida: permaneça sem posição e sem ordens.');if(setup.state!=='ENTRADA_CONFIRMADA')blockers.push(setup.reason);if(setup.state==='ENTRADA_CONFIRMADA'&&setup.riskUsdTotal>riskBudget)blockers.push(`Stop total de US$ ${setup.riskUsdTotal.toFixed(2)} supera o risco por operação.`);if(setup.state==='ENTRADA_CONFIRMADA'&&setup.riskUsdTotal>risk.remaining)blockers.push('O stop ultrapassa o drawdown restante da conta.');
+      return json(res,200,{instrument:'MNQ',timeframe:'15m',setup,risk,contracts,riskBudget,allowed:blockers.length===0,blockers,candles:candles.slice(-180),contract:{pointValue:2,tickSize:.25,tickValue:.5},execution:risk.automation==='SIGNAL_ONLY'?'SIGNAL_ONLY':'SIMULATION_ONLY',updatedAt:new Date().toISOString()});
     }
     if (pathname === '/api/mnq/backtest' && req.method === 'POST') {
       const data=await body(req),candles=Array.isArray(data.candles)&&data.candles.length?data.candles:await mnqCandles(),stopDollar=Number(data.stopDollar||100),targetDollar=Number(data.targetDollar||130),maxMicros=Math.max(1,Math.min(100,Number(data.maxMicros||1)));
@@ -313,14 +315,14 @@ async function api(req, res, pathname) {
       return json(res,200,{symbols,count:symbols.length,updatedAt:new Date().toISOString()});
     }
     if (pathname === '/api/market/klines' && req.method === 'GET') {
-      const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'SOLUSDT').toUpperCase(),interval=String(url.searchParams.get('interval')||'1d');
+      const url=new URL(req.url,'http://localhost'),symbol=normalizeMarketSymbol(url.searchParams.get('symbol')),interval=String(url.searchParams.get('interval')||'1d');
       if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!['15m','1h','4h','1d','1w'].includes(interval))return json(res,400,{error:'Par ou intervalo inválido.'});
       const response=await fetch(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=120`),data=await response.json();
       if(!response.ok)throw new Error(data.msg||'Gráfico indisponível.');
       return json(res,200,{symbol,interval,candles:data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5])}))});
     }
     if (pathname === '/api/market/pretrade' && req.method === 'GET') {
-      const symbol=String(new URL(req.url,'http://localhost').searchParams.get('symbol')||'').toUpperCase();
+      const symbol=normalizeMarketSymbol(new URL(req.url,'http://localhost').searchParams.get('symbol'));
       if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});
       const [ticker,book,exchangeInfo,isolatedPairs,...sets]=await Promise.all([
         fetch(`${marketBase()}/api/v3/ticker/24hr?symbol=${symbol}`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Ticker indisponível.');return d}),

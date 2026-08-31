@@ -1,10 +1,21 @@
 const {Pool}=require('pg');
 
 let pool;
+let lastDatabaseError='';
 function database(){
   if(!process.env.DATABASE_URL)return null;
-  if(!pool)pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_URL.includes('railway.internal')?false:{rejectUnauthorized:false},max:5});
+  if(!pool){
+    pool=new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.DATABASE_URL.includes('railway.internal')?false:{rejectUnauthorized:false},max:5,connectionTimeoutMillis:5000,idleTimeoutMillis:30000});
+    pool.on('error',error=>{lastDatabaseError=error.message;console.error('PostgreSQL desconectado:',error.message)});
+  }
   return pool;
+}
+
+async function databaseHealth(){
+  const db=database();
+  if(!db)return {configured:false,online:false,message:'Banco não configurado'};
+  try{const started=Date.now();await db.query('SELECT 1');lastDatabaseError='';return {configured:true,online:true,latencyMs:Date.now()-started,message:'Banco conectado'}}
+  catch(error){lastDatabaseError=error.message;return {configured:true,online:false,message:'Banco temporariamente indisponível',technical:lastDatabaseError}}
 }
 
 async function initDatabase(){
@@ -249,4 +260,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch};
+module.exports={initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch};

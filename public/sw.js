@@ -1,4 +1,4 @@
-const CACHE='baladatrade-mobile-v6';
+const CACHE='baladatrade-mobile-v7';
 const ASSETS=['/','/styles.css','/auth.css','/ai.css','/vendor-lightweight-charts.js','/app.js','/manifest.json','/icon.svg'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==CACHE).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));

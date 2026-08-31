@@ -24,6 +24,23 @@ test('Take Profit Trader Test usa drawdown EOD e consistência 50%',()=>{
   assert.equal(profile.dailyLoss,null);
 });
 
+test('TPT e Lucid aplicam limites próprios para conta de 50k',()=>{
+  const tpt=riskState({profile:'tpt_test',accountSize:50000,balance:50000,peakEquity:50000});
+  const lucid=riskState({profile:'lucid_eval_eod',accountSize:50000,balance:50000,peakEquity:50000});
+  assert.equal(tpt.maxLoss,2000);
+  assert.equal(tpt.maxMicros,60);
+  assert.equal(lucid.maxLoss,2000);
+  assert.equal(lucid.maxMicros,40);
+  assert.equal(lucid.consistency,50);
+});
+
+test('TPT 25k usa drawdown 1500 e limite 30 micros',()=>{
+  const state=riskState({profile:'tpt_pro',accountSize:25000,balance:25000,peakEquity:25000});
+  assert.equal(state.maxLoss,1500);
+  assert.equal(state.maxMicros,30);
+  assert.equal(state.threshold,23500);
+});
+
 test('tamanho de posição nunca excede risco ou limite de micros',()=>{
   const setup={riskUsdPerContract:52};
   assert.equal(positionSize(setup,100,10),1);

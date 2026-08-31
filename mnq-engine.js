@@ -3,20 +3,27 @@
 const MNQ={pointValue:2,tickSize:.25,tickValue:.5};
 
 const PROP_PROFILES={
-  tpt_test:{firm:'Take Profit Trader',phase:'Teste',drawdown:'EOD',dailyLoss:null,consistency:50,newsAllowed:true},
-  tpt_pro:{firm:'Take Profit Trader',phase:'PRO',drawdown:'INTRADAY',dailyLoss:null,consistency:null,newsAllowed:false},
-  tpt_pro_plus:{firm:'Take Profit Trader',phase:'PRO+',drawdown:'EOD',dailyLoss:null,consistency:null,newsAllowed:false},
-  lucid_eval_eod:{firm:'Lucid Trading',phase:'Avaliação EOD',drawdown:'EOD',dailyLoss:'OPTIONAL',consistency:null,newsAllowed:true},
-  lucid_eval_intraday:{firm:'Lucid Trading',phase:'Avaliação intraday',drawdown:'INTRADAY',dailyLoss:'OPTIONAL',consistency:null,newsAllowed:true},
-  lucid_funded:{firm:'Lucid Trading',phase:'LucidDaily financiada',drawdown:'INTRADAY',dailyLoss:'OPTIONAL',consistency:null,newsAllowed:false},
+  tpt_test:{firm:'Take Profit Trader',phase:'Teste',drawdown:'EOD',dailyLoss:null,consistency:50,minDays:3,newsAllowed:true,automation:'SIM_ONLY',source:'https://takeprofittraderhelp.zendesk.com/hc/en-us/sections/15168850786589-The-5-Core-Rules'},
+  tpt_pro:{firm:'Take Profit Trader',phase:'PRO',drawdown:'INTRADAY',dailyLoss:null,consistency:null,minDays:null,newsAllowed:false,automation:'SIGNAL_ONLY',source:'https://takeprofittraderhelp.zendesk.com/hc/en-us/articles/15171769361053-PRO-Account-Rules'},
+  tpt_pro_plus:{firm:'Take Profit Trader',phase:'PRO+',drawdown:'EOD',dailyLoss:null,consistency:null,minDays:null,newsAllowed:false,automation:'SIGNAL_ONLY',source:'https://try.takeprofittrader.com/TPT-FAQs-nf40-4-0725'},
+  lucid_eval_eod:{firm:'Lucid Trading',phase:'Avaliação EOD',drawdown:'EOD',dailyLoss:'OPTIONAL',consistency:50,minDays:null,newsAllowed:true,automation:'SIM_ONLY',source:'https://support.lucidtrading.com/en/articles/15996664-luciddaily-evaluation'},
+  lucid_eval_intraday:{firm:'Lucid Trading',phase:'Avaliação intraday',drawdown:'INTRADAY',dailyLoss:'OPTIONAL',consistency:50,minDays:null,newsAllowed:true,automation:'SIM_ONLY',source:'https://support.lucidtrading.com/en/articles/15996664-luciddaily-evaluation'},
+  lucid_funded:{firm:'Lucid Trading',phase:'LucidDaily financiada',drawdown:'INTRADAY',dailyLoss:'OPTIONAL',consistency:null,minDays:null,newsAllowed:false,automation:'SIGNAL_ONLY',source:'https://support.lucidtrading.com/en/articles/15997244-luciddaily-funded-account'},
 };
 
-const ACCOUNT_RULES={
+const LUCID_RULES={
   25000:{maxLoss:1000,dll:600,maxMicros:20},
   50000:{maxLoss:2000,dll:1200,maxMicros:40},
   100000:{maxLoss:3000,dll:1800,maxMicros:60},
   150000:{maxLoss:4500,dll:2700,maxMicros:100},
 };
+const TPT_RULES={
+  25000:{maxLoss:1500,dll:null,maxMicros:30},
+  50000:{maxLoss:2000,dll:null,maxMicros:60},
+  100000:{maxLoss:3000,dll:null,maxMicros:120},
+  150000:{maxLoss:4500,dll:null,maxMicros:150},
+};
+const ACCOUNT_RULES=LUCID_RULES;
 
 function roundTick(value){return Math.round(value/MNQ.tickSize)*MNQ.tickSize}
 function ema(values,period){if(!values.length)return 0;const k=2/(period+1);return values.slice(1).reduce((a,v)=>v*k+a*(1-k),values[0])}
@@ -25,7 +32,7 @@ function aggregate(candles,size=4){const out=[];for(let i=0;i<candles.length;i+=
 function pivots(candles,wings=3){const highs=[],lows=[];for(let i=wings;i<candles.length-wings;i++){const window=candles.slice(i-wings,i+wings+1),c=candles[i];if(window.every((x,j)=>j===wings||c.high>x.high))highs.push({index:i,price:c.high,time:c.time});if(window.every((x,j)=>j===wings||c.low<x.low))lows.push({index:i,price:c.low,time:c.time})}return {highs,lows}}
 function macroTrend(candles){const hourly=aggregate(candles,4),closes=hourly.map(x=>x.close),fast=ema(closes,20),slow=ema(closes,50),price=closes.at(-1)||0;return {trend:fast>slow&&price>fast?'LONG':fast<slow&&price<fast?'SHORT':'NEUTRAL',ema20:fast,ema50:slow,price}}
 function riskState(input={}){
-  const profile=PROP_PROFILES[input.profile]||PROP_PROFILES.tpt_test,size=Number(input.accountSize)||50000,rules=ACCOUNT_RULES[size]||ACCOUNT_RULES[50000];
+  const profile=PROP_PROFILES[input.profile]||PROP_PROFILES.tpt_test,size=Number(input.accountSize)||50000,ruleSet=profile.firm==='Take Profit Trader'?TPT_RULES:LUCID_RULES,rules=ruleSet[size]||ruleSet[50000];
   const start=Number(input.startBalance)||size,balance=Number(input.balance)||start,openPnl=Number(input.openPnl)||0,sessionStart=Number(input.sessionStartBalance)||balance,peak=Math.max(Number(input.peakEquity)||balance,balance+openPnl),dllEnabled=input.dllEnabled!==false;
   const maxLoss=Number(input.maxLoss)||rules.maxLoss,lockedFloor=start+100,rawFloor=(profile.drawdown==='INTRADAY'?peak:Number(input.peakClosedBalance)||balance)-maxLoss,threshold=Math.min(rawFloor,lockedFloor),dailyFloor=dllEnabled&&profile.dailyLoss==='OPTIONAL'?sessionStart-(Number(input.dailyLoss)||rules.dll):-Infinity;
   const effectiveFloor=Math.max(threshold,dailyFloor),equity=balance+openPnl,remaining=equity-effectiveFloor;
@@ -53,4 +60,4 @@ function backtest(candles,options={}){
   const net=trades.reduce((s,t)=>s+t.pnl,0),wins=trades.filter(t=>t.pnl>0),losses=trades.filter(t=>t.pnl<0),grossWin=wins.reduce((s,t)=>s+t.pnl,0),grossLoss=Math.abs(losses.reduce((s,t)=>s+t.pnl,0));let equity=0,peak=0,maxDrawdown=0;for(const t of trades){equity+=t.pnl;peak=Math.max(peak,equity);maxDrawdown=Math.max(maxDrawdown,peak-equity)}return {trades,summary:{trades:trades.length,wins:wins.length,losses:losses.length,winRate:trades.length?wins.length/trades.length*100:0,net,grossWin,grossLoss,profitFactor:grossLoss?grossWin/grossLoss:null,maxDrawdown}};
 }
 
-module.exports={MNQ,PROP_PROFILES,ACCOUNT_RULES,ema,atr,pivots,macroTrend,riskState,detectSetup,positionSize,backtest};
+module.exports={MNQ,PROP_PROFILES,ACCOUNT_RULES,TPT_RULES,LUCID_RULES,ema,atr,pivots,macroTrend,riskState,detectSetup,positionSize,backtest};

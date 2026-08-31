@@ -1,6 +1,6 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {MNQ,PROP_PROFILES,riskState,detectSetup,positionSize,backtest}=require('../mnq-engine');
+const {MNQ,PROP_PROFILES,riskState,detectSetup,positionSize,backtest,priceInZone}=require('../mnq-engine');
 
 test('MNQ usa especificação correta de ponto e tick',()=>{
   assert.equal(MNQ.pointValue,2);
@@ -59,9 +59,19 @@ test('stop e take em dólar são convertidos por quantidade e valor do ponto',()
   const candles=Array.from({length:100},(_,i)=>({time:i,open:100+i,high:101+i,low:99+i,close:100+i,volume:1}));
   const original=detectSetup(candles,{contracts:2,stopDollar:80,targetDollar:104});
   if(original.entry){
+    assert.equal(original.entryValid,true);
+    assert.equal(priceInZone(original.entry,original.fib.zoneLow,original.fib.zoneHigh),true);
+    assert.equal(original.entryType,'LIMIT_FIB_ZONE');
     assert.equal(original.riskUsdTotal,80);
     assert.equal(original.rewardUsdTotal,104);
     assert.equal(original.stopMode,'DOLLAR');
     assert.equal(original.targetMode,'DOLLAR');
   }else assert.ok(['AGUARDANDO_BOS','CONTRA_MACRO','SEM_IMPULSO'].includes(original.state));
+});
+
+test('trava qualquer entrada fora da zona Fibonacci',()=>{
+  assert.equal(priceInZone(100,100,110),true);
+  assert.equal(priceInZone(110,100,110),true);
+  assert.equal(priceInZone(99.5,100,110),false);
+  assert.equal(priceInZone(110.5,100,110),false);
 });

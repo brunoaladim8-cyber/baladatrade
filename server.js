@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const {PROP_PROFILES,ACCOUNT_RULES,TPT_RULES,LUCID_RULES,riskState,detectSetup,backtest}=require('./mnq-engine');
+const {calculateSpotPlan}=require('./spot-engine');
 const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch}=require('./db');
 
 const root = path.join(__dirname, 'public');
@@ -194,9 +195,34 @@ async function marginMonitor(){
   return {level,totalAssetUsdt:Number(account.totalAssetOfBtc||0)*(prices.get('BTCUSDT')||0),totalDebtUsdt:Number(account.totalLiabilityOfBtc||0)*(prices.get('BTCUSDT')||0),netUsdt:Number(account.totalNetAssetOfBtc||0)*(prices.get('BTCUSDT')||0),positions,alerts,updatedAt:new Date().toISOString()};
 }
 
+// ============================================================
+// PENEIRA DO SCANNER — 02/09/2026
+//
+// O scanner listava seis candidatos lado a lado, todos com a mesma cara. Em
+// 02/09 o Bruno escolheu o ARBUSDT: PULLBACK LONG, +14,06% em 24h — e volume
+// de 0,4x, o MENOR da tela, tendo FF a 2,62x e LA a 3,9x na mesma lista.
+// Pullback com volume secando e o padrao mais comum de repique que nao
+// continua: a coluna existia, mas nao pesava em nada.
+//
+// A peneira nao esconde candidato — ela escreve o motivo de cada um NAO
+// servir, e deixa os elegiveis no topo. Quem quiser entrar contra o filtro
+// entra vendo o que esta contrariando.
+// ============================================================
+function peneira(x){
+  const fora=[];
+  if(x.setup==='ESTICADA')fora.push('Setup ESTICADA: perseguir alta ja feita.');
+  if(x.setup==='OBSERVAR'||x.setup==='SEM DADOS')fora.push('Sem setup valido no momento.');
+  if(Number(x.volumeRatio15)<1)fora.push(`Volume de 15m em ${Number(x.volumeRatio15||0).toFixed(2)}x da media: movimento sem confirmacao.`);
+  if(Number(x.rsi15)>=75)fora.push(`RSI 15m em ${Math.round(x.rsi15)}: sobrecomprado.`);
+  if(Number(x.atr15Pct)>=3)fora.push(`ATR 15m de ${Number(x.atr15Pct).toFixed(2)}%: stop tecnico exige posicao grande demais para capital pequeno.`);
+  if(Number(x.change24h)>=25)fora.push(`Ja subiu ${Number(x.change24h).toFixed(1)}% em 24h.`);
+  return {desqualificadores:fora,elegivel:fora.length===0};
+}
+
 async function setupScanner(){
-  const coins=(await marketRadar(50)).slice(0,25),results=await Promise.all(coins.map(async coin=>{try{const [m15,h1]=await Promise.all([publicKlines(coin.symbol,'15m',80),publicKlines(coin.symbol,'1h',80)]),short=timeframeReading(m15,'15m'),long=timeframeReading(h1,'1h'),distanceEma=long.atr?Math.abs(coin.price-short.ema20)/long.atr:99;let setup='OBSERVAR',reason='Sem alinhamento suficiente';if(coin.change24h>0&&(coin.price-coin.low)/(coin.high-coin.low||1)>.9||short.rsi>=75){setup='ESTICADA';reason='Perto da máxima ou RSI curto elevado'}else if(long.trend==='ALTA'&&distanceEma<=.6&&short.rsi>=38&&short.rsi<=65){setup='PULLBACK LONG';reason='Tendência de 1h em alta e preço próximo da EMA20'}else if(long.trend==='BAIXA'&&short.trend==='BAIXA'&&short.rsi>30){setup='POSSÍVEL SHORT';reason='15m e 1h alinhados em baixa; confirme rompimento e stop'}else if(long.trend==='ALTA'&&short.trend==='ALTA'&&short.volumeRatio>=1.2){setup='FORÇA LONG';reason='15m e 1h em alta com volume relativo'}return {...coin,setup,reason,rsi15:short.rsi,atr15Pct:short.atrPct,volumeRatio15:short.volumeRatio,trend15:short.trend,trend1h:long.trend}}catch{return {...coin,setup:'SEM DADOS',reason:'Candles indisponíveis'}}}));
-  const alerts=results.filter(x=>['PULLBACK LONG','POSSÍVEL SHORT','FORÇA LONG'].includes(x.setup)).map(x=>({kind:'setup',level:'info',symbol:x.symbol,title:`${x.setup}: ${x.symbol}`,message:x.reason,fingerprint:`setup-${x.symbol}-${x.setup}-${new Date().toISOString().slice(0,13)}`,payload:x}));await saveAlerts(alerts);return {setups:results,generatedAt:new Date().toISOString()};
+  const coins=(await marketRadar(50)).slice(0,25),results=await Promise.all(coins.map(async coin=>{try{const [m15,h1]=await Promise.all([publicKlines(coin.symbol,'15m',80),publicKlines(coin.symbol,'1h',80)]),short=timeframeReading(m15,'15m'),long=timeframeReading(h1,'1h'),distanceEma=long.atr?Math.abs(coin.price-short.ema20)/long.atr:99;let setup='OBSERVAR',reason='Sem alinhamento suficiente';if(coin.change24h>0&&(coin.price-coin.low)/(coin.high-coin.low||1)>.9||short.rsi>=75){setup='ESTICADA';reason='Perto da máxima ou RSI curto elevado'}else if(long.trend==='ALTA'&&distanceEma<=.6&&short.rsi>=38&&short.rsi<=65){setup='PULLBACK LONG';reason='Tendência de 1h em alta e preço próximo da EMA20'}else if(long.trend==='BAIXA'&&short.trend==='BAIXA'&&short.rsi>30){setup='POSSÍVEL SHORT';reason='15m e 1h alinhados em baixa; confirme rompimento e stop'}else if(long.trend==='ALTA'&&short.trend==='ALTA'&&short.volumeRatio>=1.2){setup='FORÇA LONG';reason='15m e 1h em alta com volume relativo'}return {...coin,setup,reason,rsi15:short.rsi,atr15Pct:short.atrPct,volumeRatio15:short.volumeRatio,trend15:short.trend,trend1h:long.trend,...peneira({setup,rsi15:short.rsi,volumeRatio15:short.volumeRatio,atr15Pct:short.atrPct,change24h:coin.change24h})}}catch{return {...coin,setup:'SEM DADOS',reason:'Candles indisponíveis',desqualificadores:['Candles indisponíveis.'],elegivel:false}}}));
+  results.sort((a,b)=>Number(b.elegivel)-Number(a.elegivel)||(b.volumeRatio15||0)-(a.volumeRatio15||0));
+  const alerts=results.filter(x=>x.elegivel&&['PULLBACK LONG','POSSÍVEL SHORT','FORÇA LONG'].includes(x.setup)).map(x=>({kind:'setup',level:'info',symbol:x.symbol,title:`${x.setup}: ${x.symbol}`,message:x.reason,fingerprint:`setup-${x.symbol}-${x.setup}-${new Date().toISOString().slice(0,13)}`,payload:x}));await saveAlerts(alerts);return {setups:results,generatedAt:new Date().toISOString()};
 }
 
 async function evaluatePlans(){
@@ -204,10 +230,44 @@ async function evaluatePlans(){
   for(const plan of plans){let price;try{price=await publicPrice(plan.symbol)}catch{continue}const hitTarget=plan.direction==='LONG'?price>=plan.target:price<=plan.target,hitStop=plan.direction==='LONG'?price<=plan.stop:price>=plan.stop;let status='PLANNED',exit=price;if(hitTarget){status='TARGET';exit=plan.target}else if(hitStop){status='STOP';exit=plan.stop}const pnl=(plan.direction==='LONG'?exit-plan.entry:plan.entry-exit)*plan.quantity;if(status!=='PLANNED'){await closeTradePlan(plan.id,status,exit,pnl,new Date());await saveAlerts([{kind:'plan',level:status==='TARGET'?'info':'danger',symbol:plan.symbol,title:`Plano #${plan.id}: ${status}`,message:`Resultado aproximado ${pnl.toFixed(4)} USDT.`,fingerprint:`plan-${plan.id}-${status}`,payload:{planId:plan.id,pnl,exit}}])}evaluated.push({...plan,currentPrice:price,currentPnl:(plan.direction==='LONG'?price-plan.entry:plan.entry-price)*plan.quantity,status:status==='PLANNED'?plan.status:status})}return {plans:evaluated,updatedAt:new Date().toISOString()};
 }
 
+// ============================================================
+// LEITURA DA MESA — 02/09/2026
+//
+// O monitor mostrava cada posicao sozinha e, por isso, escondia os dois
+// problemas mais caros, que so existem no CONJUNTO:
+//
+// 1. TRAVA. Em 02/09 havia MNQ comprado a 29.414 e MNQ vendido a 29.800 ao
+//    mesmo tempo. Exposicao direcional zero: o indice pode ir para 25.000 ou
+//    33.000 que o resultado somado nao muda — so corre custo. Olhando linha a
+//    linha, uma aparecia ganhando 7.407 e a outra perdendo 2.775, e nada
+//    dizia que uma anulava a outra.
+// 2. POSICAO SEM STOP. As tres estavam sem stop e sem alvo, com a barra
+//    lateral marcando "0 dias de disciplina". O painel media disciplina e
+//    nao cobrava a unica coisa que a define.
+//
+// Estas contas nao substituem julgamento; elas colocam na tela o que o olho
+// nao junta sozinho.
+// ============================================================
+function leituraDaMesa(positions){
+  const semStop=positions.filter(p=>!p.hasStop);
+  const porSimbolo=new Map();
+  for(const p of positions){const atual=porSimbolo.get(p.symbol)||{long:[],short:[]};atual[p.direction==='LONG'?'long':'short'].push(p);porSimbolo.set(p.symbol,atual)}
+  const travas=[...porSimbolo.entries()].filter(([,lados])=>lados.long.length&&lados.short.length).map(([symbol,lados])=>{
+    const qtdLong=lados.long.reduce((soma,p)=>soma+Number(p.quantity),0),qtdShort=lados.short.reduce((soma,p)=>soma+Number(p.quantity),0);
+    const resultado=[...lados.long,...lados.short].reduce((soma,p)=>soma+p.pnl,0);
+    return {symbol,qtdLong,qtdShort,exposicaoLiquida:qtdLong-qtdShort,travada:Math.abs(qtdLong-qtdShort)<1e-9,resultadoSomado:resultado,currency:lados.long[0]?.currency||lados.short[0]?.currency||'USDT'};
+  });
+  const porMoeda={};for(const p of positions){const moeda=p.currency||'USDT';porMoeda[moeda]=(porMoeda[moeda]||0)+p.pnl}
+  const avisos=[];
+  for(const t of travas)avisos.push({level:t.travada?'warning':'info',title:`${t.symbol}: posicoes opostas abertas`,message:t.travada?`${t.qtdLong} comprado(s) contra ${t.qtdShort} vendido(s). Exposicao direcional zero: o preco pode ir para qualquer lado que o resultado somado nao muda. Resultado travado em ${t.resultadoSomado.toFixed(2)} ${t.currency}.`:`${t.qtdLong} comprado(s) e ${t.qtdShort} vendido(s). Exposicao liquida de ${(t.qtdLong-t.qtdShort).toFixed(4)}; o resto esta travado.`});
+  if(semStop.length)avisos.push({level:'danger',title:`${semStop.length} posicao(oes) sem stop`,message:`${semStop.map(p=>p.symbol).join(', ')}. Sem stop nao existe perda maxima: existe o preco que o mercado quiser.`});
+  return {leitura:{semStop:semStop.length,semPlano:positions.filter(p=>!p.hasPlan).length,travas,resultadoPorMoeda:porMoeda,avisos}};
+}
+
 async function monitorPositions(){
   const watches=await positionWatches(),positions=[];
   const errors=[];
-  for(const watch of watches){let price;try{price=await publicPrice(watch.symbol)}catch(error){errors.push({id:watch.id,symbol:watch.symbol,error:error.message});continue}const isLong=watch.direction==='LONG',multiplier=watch.symbol==='MNQ'?2:1,currency=watch.symbol==='MNQ'?'USD':'USDT',peak=isLong?Math.max(watch.peak_price,price):Math.min(watch.peak_price,price),pnl=(isLong?price-watch.entry:watch.entry-price)*watch.quantity*multiplier,pnlPct=(isLong?price/watch.entry-1:watch.entry/price-1)*100,moveFromPeak=(isLong?price/peak-1:peak/price-1)*100,events=[];if(watch.stop&&(isLong?price<=watch.stop:price>=watch.stop))events.push({level:'danger',title:`STOP atingido: ${watch.symbol}`,message:`Preço ${price}. Stop planejado ${watch.stop}.`});if(watch.target&&(isLong?price>=watch.target:price<=watch.target))events.push({level:'info',title:`ALVO atingido: ${watch.symbol}`,message:`Preço ${price}. Alvo planejado ${watch.target}.`});if(watch.trailing_pct&&Math.abs(moveFromPeak)>=watch.trailing_pct)events.push({level:'warning',title:`Devolução do movimento: ${watch.symbol}`,message:`Preço recuou ${Math.abs(moveFromPeak).toFixed(2)}% desde o melhor preço ${peak}.`});await updatePositionWatch(watch.id,peak);if(events.length)await saveAlerts(events.map(event=>({kind:'position',symbol:watch.symbol,...event,fingerprint:`position-${watch.id}-${event.title.split(':')[0]}-${new Date().toISOString().slice(0,13)}`,payload:{watchId:watch.id,price,pnl,pnlPct,peak}})));positions.push({...watch,currentPrice:price,peakPrice:peak,pnl,pnlPct,moveFromPeak,events,currency,multiplier,feed:watch.symbol==='MNQ'?'CME via feed público':'Binance'})}return {positions,errors,updatedAt:new Date().toISOString()};
+  for(const watch of watches){let price;try{price=await publicPrice(watch.symbol)}catch(error){errors.push({id:watch.id,symbol:watch.symbol,error:error.message});continue}const isLong=watch.direction==='LONG',multiplier=watch.symbol==='MNQ'?2:1,currency=watch.symbol==='MNQ'?'USD':'USDT',peak=isLong?Math.max(watch.peak_price,price):Math.min(watch.peak_price,price),pnl=(isLong?price-watch.entry:watch.entry-price)*watch.quantity*multiplier,pnlPct=(isLong?price/watch.entry-1:watch.entry/price-1)*100,moveFromPeak=(isLong?price/peak-1:peak/price-1)*100,events=[];if(watch.stop&&(isLong?price<=watch.stop:price>=watch.stop))events.push({level:'danger',title:`STOP atingido: ${watch.symbol}`,message:`Preço ${price}. Stop planejado ${watch.stop}.`});if(watch.target&&(isLong?price>=watch.target:price<=watch.target))events.push({level:'info',title:`ALVO atingido: ${watch.symbol}`,message:`Preço ${price}. Alvo planejado ${watch.target}.`});if(watch.trailing_pct&&Math.abs(moveFromPeak)>=watch.trailing_pct)events.push({level:'warning',title:`Devolução do movimento: ${watch.symbol}`,message:`Preço recuou ${Math.abs(moveFromPeak).toFixed(2)}% desde o melhor preço ${peak}.`});await updatePositionWatch(watch.id,peak);if(events.length)await saveAlerts(events.map(event=>({kind:'position',symbol:watch.symbol,...event,fingerprint:`position-${watch.id}-${event.title.split(':')[0]}-${new Date().toISOString().slice(0,13)}`,payload:{watchId:watch.id,price,pnl,pnlPct,peak}})));const giveBackValue=Math.abs(peak-price)*watch.quantity*multiplier,peakPnl=(isLong?peak-watch.entry:watch.entry-peak)*watch.quantity*multiplier,hasStop=Boolean(watch.stop),hasTarget=Boolean(watch.target),distanceToStopPct=hasStop?(isLong?price/watch.stop-1:watch.stop/price-1)*100:null,distanceToTargetPct=hasTarget?(isLong?watch.target/price-1:price/watch.target-1)*100:null;positions.push({...watch,currentPrice:price,peakPrice:peak,pnl,pnlPct,moveFromPeak,giveBackValue,peakPnl,hasStop,hasTarget,hasPlan:hasStop&&hasTarget,distanceToStopPct,distanceToTargetPct,events,currency,multiplier,feed:watch.symbol==='MNQ'?'CME via feed público':'Binance'})}return {positions,errors,...leituraDaMesa(positions),updatedAt:new Date().toISOString()};
 }
 
 function ema(values,period){if(!values.length)return 0;const k=2/(period+1);return values.slice(1).reduce((value,item)=>item*k+value*(1-k),values[0])}
@@ -250,6 +310,19 @@ async function marketAgentAnalysis(){
   const text=message.content.filter(block=>block.type==='text').map(block=>block.text).join('').replace(/^```json\s*|\s*```$/g,'');
   let analysis;try{analysis=JSON.parse(text)}catch{throw new Error('O agente retornou uma análise inválida. Tente novamente.');}
   return {analysis,model:message.model,generatedAt:new Date().toISOString(),disclaimer:'Análise educacional baseada em dados de mercado; não é recomendação financeira.'};
+}
+
+async function spotAgentAudit(plan,market={}){
+  if(!process.env.ANTHROPIC_API_KEY)throw new Error('Auditor Claude ainda não configurado.');
+  const safeMarket={symbol:plan.symbol,price:Number(market.price||0),alignment:String(market.alignment||''),risk:market.risk||{},strategy:market.strategy||{},warnings:Array.isArray(market.warnings)?market.warnings.slice(0,10):[],generatedAt:market.generatedAt||null};
+  const safePlan={symbol:plan.symbol,direction:plan.direction,capital:plan.capital,riskPct:plan.riskPct,riskBudget:plan.riskBudget,entry:plan.entry,stop:plan.stop,target:plan.target,quantity:plan.quantity,notional:plan.notional,lossNet:plan.lossNet,gainNet:plan.gainNet,riskRewardNet:plan.riskRewardNet,allowed:plan.allowed,blockers:plan.blockers,execution:'MANUAL_ONLY',automation:'DISABLED'};
+  const client=new Anthropic({apiKey:process.env.ANTHROPIC_API_KEY});
+  const auditSchema={type:'object',additionalProperties:false,properties:{verdict:{type:'string',enum:['APROVADO_PARA_AVALIACAO','AGUARDAR','BLOQUEADO','DADOS_INSUFICIENTES']},summary:{type:'string'},checks:{type:'array',items:{type:'object',additionalProperties:false,properties:{rule:{type:'string'},status:{type:'string',enum:['PASS','FAIL','WARNING']},evidence:{type:'string'}},required:['rule','status','evidence']}},risks:{type:'array',items:{type:'string'}},nextCondition:{type:'string'},confidence:{type:'number'}},required:['verdict','summary','checks','risks','nextCondition','confidence']};
+  const message=await client.messages.create({model:process.env.ANTHROPIC_MODEL||'claude-sonnet-4-6',max_tokens:1600,temperature:.1,output_config:{format:{type:'json_schema',schema:auditSchema}},system:'Você é o Auditor Claude do BaladaTrade. Audite apenas os números recebidos. Não dê ordem de compra, não prometa lucro, não altere entrada/stop/alvo/quantidade e jamais aprove um plano com allowed=false. execution=MANUAL_ONLY e automation=DISABLED são proteções esperadas, não falhas. Use confidence como percentual de 0 a 100. Seja conciso: no máximo 8 checks e 5 risks.',messages:[{role:'user',content:`Audite este plano Binance Spot manual. Plano: ${JSON.stringify(safePlan)} Mercado: ${JSON.stringify(safeMarket)}`}]},{signal:AbortSignal.timeout(30000)});
+  const text=message.content.filter(block=>block.type==='text').map(block=>block.text).join('').replace(/^```json\s*|\s*```$/g,'');let audit;try{audit=JSON.parse(text)}catch{throw new Error('Claude retornou uma auditoria inválida.');}
+  const verdicts=new Set(['APROVADO_PARA_AVALIACAO','AGUARDAR','BLOQUEADO','DADOS_INSUFICIENTES']);if(!verdicts.has(audit.verdict))throw new Error('Claude retornou um veredito inválido.');if(!plan.allowed&&audit.verdict==='APROVADO_PARA_AVALIACAO')audit.verdict='BLOQUEADO';
+  audit.confidence=Math.max(0,Math.min(100,Number(audit.confidence)||0));
+  return {audit,model:message.model,generatedAt:new Date().toISOString(),execution:'MANUAL_ONLY',disclaimer:'Auditoria educacional; a decisão e a execução permanecem manuais.'};
 }
 
 function portfolioAlerts(summary){
@@ -348,6 +421,21 @@ async function api(req, res, pathname) {
       const saved=await saveMarketScan(scan).catch(()=>null);return json(res,200,{...scan,savedScanId:saved?.id||null});
     }
     if (pathname === '/api/market/scans' && req.method === 'GET') {const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});return json(res,200,{symbol,scans:await marketScanHistory(symbol,Number(url.searchParams.get('limit')||50))});}
+    if (pathname === '/api/spot/plan' && req.method === 'POST') {
+      const data=await body(req),symbol=normalizeMarketSymbol(data.symbol);
+      if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!symbol.endsWith('USDT'))return json(res,400,{error:'Escolha um par Spot cotado em USDT.'});
+      const response=await fetch(`${marketBase()}/api/v3/exchangeInfo?symbol=${symbol}`,{signal:AbortSignal.timeout(10000)}),info=await response.json();if(!response.ok)throw new Error(info.msg||'Filtros do par indisponíveis.');const market=info.symbols?.[0];if(!market||market.status!=='TRADING'||!market.isSpotTradingAllowed)return json(res,400,{error:'Este par não está disponível para Spot.'});
+      const plan=calculateSpotPlan({symbol,capital:Number(data.capital),riskPct:Number(data.riskPct),entry:Number(data.entry),stop:Number(data.stop),target:Number(data.target),feeRate:data.feeRate===undefined ? .001 : Number(data.feeRate),filters:market.filters});
+      // 02/09/2026 — ENTRADA ESTICADA. O scanner marcou ARBUSDT como PULLBACK
+      // LONG a 0,1233; quando a tela de trade abriu, o par estava 0,1322 —
+      // +7,2%. O pullback que gerou o sinal ja tinha sido comprado, e nada na
+      // tela dizia isso. Buscar o preco agora custa uma chamada e transforma
+      // "entrada que parecia boa" em "entrada X% acima do mercado".
+      const precoAgora=await publicPrice(symbol).catch(()=>null);
+      const desvioPct=precoAgora?(Number(data.entry)/precoAgora-1)*100:null;
+      const contexto={precoAgora,desvioPct,esticada:desvioPct!==null&&desvioPct>1.5,abaixoDoMercado:desvioPct!==null&&desvioPct<-1.5};
+      return json(res,200,{plan,contexto,market:{baseAsset:market.baseAsset,quoteAsset:market.quoteAsset,status:market.status},updatedAt:new Date().toISOString()});
+    }
     if (pathname === '/api/market/setups' && req.method === 'GET') return json(res,200,await setupScanner());
     if (pathname === '/api/margin/monitor' && req.method === 'GET') return json(res,200,await marginMonitor());
     if (pathname === '/api/trade-plans' && req.method === 'GET') {const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();return json(res,200,{plans:await tradePlanHistory(symbol,Number(url.searchParams.get('limit')||50))});}
@@ -356,12 +444,9 @@ async function api(req, res, pathname) {
     if (pathname === '/api/binance/trades' && req.method === 'GET') {
       const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();
       if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});
-      const [spot,margin]=await Promise.all([
-        signedBinance('/api/v3/myTrades','GET',{symbol,limit:'500'}).catch(error=>Object.assign([],{_error:error.message})),
-        signedBinance('/sapi/v1/margin/myTrades','GET',{symbol,limit:'500'}).catch(error=>Object.assign([],{_error:error.message}))
-      ]);
-      const warnings=[];if(spot._error)warnings.push(`Spot: ${spot._error}`);if(margin._error)warnings.push(`Margem: ${margin._error}`);
-      return json(res,200,{symbol,spot:summarizeTrades(spot,'Spot'),margin:summarizeTrades(margin,'Margem Cross'),warnings,updatedAt:new Date().toISOString()});
+      const spot=await signedBinance('/api/v3/myTrades','GET',{symbol,limit:'500'}).catch(error=>Object.assign([],{_error:error.message}));
+      const warnings=[];if(spot._error)warnings.push(`Spot: ${spot._error}`);
+      return json(res,200,{symbol,spot:summarizeTrades(spot,'Spot'),warnings,scope:'SPOT_READ_ONLY',updatedAt:new Date().toISOString()});
     }
     if (pathname === '/api/paper/account' && req.method === 'GET') return json(res,200,await paperSummary());
     if (pathname === '/api/ledger' && req.method === 'GET') return json(res,200,await ledgerData(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||200)));
@@ -392,6 +477,7 @@ async function api(req, res, pathname) {
       return json(res,200,{ok:true,price,account:await paperSummary()});
     }
     if (pathname === '/api/ai/market-analysis' && req.method === 'POST') return json(res,200,await marketAgentAnalysis());
+    if (pathname === '/api/ai/spot-audit' && req.method === 'POST') {const data=await body(req);if(!data.plan||typeof data.plan!=='object')return json(res,400,{error:'Calcule o plano Spot antes da auditoria.'});return json(res,200,await spotAgentAudit(data.plan,data.market||{}));}
     if ((pathname === '/api/binance/order/test' || pathname === '/api/binance/order') && req.method === 'POST') {
       const order = await body(req);
       const symbol = String(order.symbol||'').toUpperCase();
@@ -432,4 +518,4 @@ if (require.main === module) {
   });
   initDatabase().then(ok=>console.log(ok?'PostgreSQL conectado':'PostgreSQL não configurado')).catch(error=>console.error('Falha PostgreSQL:',error.message));
 }
-module.exports = {handler};
+module.exports = {handler,leituraDaMesa,peneira};

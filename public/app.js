@@ -216,7 +216,9 @@ async function carregarParesSpot(){
     spotPares=(data.symbols||[]).filter(x=>x.spot&&x.quote==='USDT').map(x=>x.symbol);
     filtrarPares('');
   }catch{$('#spotQuote').textContent='Nao foi possivel carregar a lista de pares. Digite o par completo, ex.: ARBUSDT.'}
-  const favoritos=JSON.parse(localStorage.getItem('bt_favorites')||'[]').filter(x=>x.endsWith('USDT')).slice(0,6);
+  // favorites() e a fonte unica da watchlist (chave baladatrade-market-favorites).
+  // Ler o localStorage direto com outra chave devolvia lista vazia em silencio.
+  const favoritos=favorites().filter(x=>x.endsWith('USDT')).slice(0,6);
   $('#spotFavChips').innerHTML=favoritos.map(s=>`<button type="button" class="chip" data-par="${esc(s)}">${esc(s.replace('USDT',''))}</button>`).join('');
   $$('#spotFavChips .chip').forEach(b=>b.onclick=()=>{$('#spotSymbol').value=b.dataset.par;carregarCotacao()});
 }
@@ -235,7 +237,12 @@ async function carregarCotacao(){
   try{
     const data=await spotApi(`/api/market/pretrade?symbol=${encodeURIComponent(par)}`);
     spotPreco=Number(data.price);spotMercado=data;
-    const f15=(data.frames||[]).find(f=>f.timeframe==='15m')||(data.frames||[])[0];
+    // O pretrade rotula os frames em portugues ('15 minutos', '1 hora',
+    // '4 horas') no campo `label` — nao 'timeframe'/'15m'. Procurar pela
+    // chave errada nao quebra nada visivelmente: o ATR fica nulo e os botoes
+    // de stop param de responder, que e pior que um erro na tela.
+    const frames=data.frames||[];
+    const f15=frames.find(f=>String(f.label||'').startsWith('15'))||frames[0];
     spotAtr=Number(f15?.atrPct)||null;
     const vol=Number(f15?.volumeRatio);
     const alertas=[];

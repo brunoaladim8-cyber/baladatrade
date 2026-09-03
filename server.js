@@ -76,6 +76,69 @@ async function signedBinance(endpoint, method='GET', params={}) {
   return data;
 }
 
+// ============================================================
+// MESA EARN — 03/09/2026
+//
+// O que a tela da Binance nao responde: quanto do meu dinheiro esta PARADO.
+// Em 03/09/2026 o Earn do Bruno mostrava quatro posicoes rendendo — C, HEMI,
+// OPG e USDC — somando cerca de cinco centavos de dolar, enquanto 14,19 USDT
+// dormiam na carteira Spot a 0% ao ano. A tela da corretora exibe o que esta
+// aplicado; ela nao cobra o que nao esta.
+//
+// Simple Earn Flexible resgata na hora, entao capital de trade parado entre
+// operacoes nao precisa render zero. O calculo aqui e deliberadamente honesto:
+// mostra o ganho anual em dinheiro, nao so o APR em percentual. Em conta
+// pequena, "7,52% ao ano" soa muito e vale centavos — e quem decide com o
+// numero certo na frente decide melhor.
+// ============================================================
+async function earnOverview(){
+  const [posicoes,catalogo,conta,precos]=await Promise.all([
+    signedBinance('/sapi/v1/simple-earn/flexible/position','GET',{current:'1',size:'100'}).catch(e=>({rows:[],_error:e.message})),
+    signedBinance('/sapi/v1/simple-earn/flexible/list','GET',{current:'1',size:'100'}).catch(e=>({rows:[],_error:e.message})),
+    signedBinance('/api/v3/account').catch(e=>({balances:[],_error:e.message})),
+    fetch(`${binanceConfig().base}/api/v3/ticker/price`).then(r=>r.json()).catch(()=>[]),
+  ]);
+  const porSimbolo=new Map((Array.isArray(precos)?precos:[]).map(x=>[x.symbol,Number(x.price)]));
+  const estaveis=new Set(['USDT','USDC','FDUSD','TUSD','USDP','DAI']);
+  const emDolar=(ativo,quantidade)=>{
+    const q=Number(quantidade)||0;
+    if(estaveis.has(ativo))return q;
+    return q*(porSimbolo.get(`${ativo}USDT`)||porSimbolo.get(`${ativo}USDC`)||0);
+  };
+  // APR por ativo: o catalogo traz varios produtos por moeda; fica o melhor.
+  const melhorApr=new Map();
+  for(const linha of catalogo.rows||[]){
+    const apr=Number(linha.latestAnnualPercentageRate||0)*100;
+    if(!melhorApr.has(linha.asset)||apr>melhorApr.get(linha.asset).apr)melhorApr.set(linha.asset,{apr,podeSubscrever:linha.canPurchase!==false,produtoId:linha.productId});
+  }
+  const aplicado=(posicoes.rows||[]).map(linha=>{
+    const quantidade=Number(linha.totalAmount||0),valor=emDolar(linha.asset,quantidade);
+    const apr=Number(linha.latestAnnualPercentageRate||0)*100||melhorApr.get(linha.asset)?.apr||0;
+    return {ativo:linha.asset,quantidade,valorUsd:valor,apr,ganhoAnualUsd:valor*apr/100,
+            acumulado:Number(linha.cumulativeTotalRewards||linha.totalRewards||0),autoSubscribe:Boolean(linha.canRedeem&&linha.autoSubscribe)};
+  }).sort((a,b)=>b.valorUsd-a.valorUsd);
+  // O ponto cego: saldo livre na Spot que poderia estar rendendo.
+  const parado=(conta.balances||[]).map(b=>{
+    const livre=Number(b.free||0);if(!(livre>0))return null;
+    const valor=emDolar(b.asset,livre),oferta=melhorApr.get(b.asset);
+    if(!oferta||!oferta.podeSubscrever)return null;
+    return {ativo:b.asset,quantidade:livre,valorUsd:valor,apr:oferta.apr,ganhoAnualUsd:valor*oferta.apr/100};
+  }).filter(Boolean).sort((a,b)=>b.ganhoAnualUsd-a.ganhoAnualUsd);
+  const totalAplicado=aplicado.reduce((soma,x)=>soma+x.valorUsd,0);
+  const totalParado=parado.reduce((soma,x)=>soma+x.valorUsd,0);
+  const ganhoAtualAno=aplicado.reduce((soma,x)=>soma+x.ganhoAnualUsd,0);
+  const ganhoPotencialAno=parado.reduce((soma,x)=>soma+x.ganhoAnualUsd,0);
+  const avisos=[];
+  if(totalParado>totalAplicado*2&&totalParado>1)avisos.push({level:'warning',title:'A maior parte do seu saldo esta parada',
+    message:`${totalParado.toFixed(2)} USD livres na Spot contra ${totalAplicado.toFixed(2)} USD aplicados. Flexible resgata na hora, entao capital entre operacoes nao precisa render zero.`});
+  if(ganhoPotencialAno>0&&ganhoPotencialAno<1)avisos.push({level:'info',title:'O ganho cabe em centavos — decida com o numero, nao com o percentual',
+    message:`Aplicar tudo que esta parado renderia cerca de ${ganhoPotencialAno.toFixed(4)} USD por ANO. APR alto em conta pequena continua sendo centavos.`});
+  if(posicoes._error)avisos.push({level:'danger',title:'Posicoes do Earn indisponiveis',message:posicoes._error});
+  return {aplicado,parado,totais:{totalAplicado,totalParado,ganhoAtualAno,ganhoPotencialAno,
+          aprMedioPonderado:totalAplicado?ganhoAtualAno/totalAplicado*100:0},avisos,
+          execution:'LEITURA_APENAS',updatedAt:new Date().toISOString()};
+}
+
 async function portfolioSummary(){
   const [account,earnResult,lockedResult,fundingResult,marginResult]=await Promise.all([
     signedBinance('/api/v3/account'),
@@ -436,6 +499,7 @@ async function api(req, res, pathname) {
       const contexto={precoAgora,desvioPct,esticada:desvioPct!==null&&desvioPct>1.5,abaixoDoMercado:desvioPct!==null&&desvioPct<-1.5};
       return json(res,200,{plan,contexto,market:{baseAsset:market.baseAsset,quoteAsset:market.quoteAsset,status:market.status},updatedAt:new Date().toISOString()});
     }
+    if (pathname === '/api/earn/overview' && req.method === 'GET') return json(res,200,await earnOverview());
     if (pathname === '/api/market/setups' && req.method === 'GET') return json(res,200,await setupScanner());
     if (pathname === '/api/margin/monitor' && req.method === 'GET') return json(res,200,await marginMonitor());
     if (pathname === '/api/trade-plans' && req.method === 'GET') {const url=new URL(req.url,'http://localhost'),symbol=String(url.searchParams.get('symbol')||'').toUpperCase();return json(res,200,{plans:await tradePlanHistory(symbol,Number(url.searchParams.get('limit')||50))});}

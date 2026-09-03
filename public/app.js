@@ -365,3 +365,61 @@ ${a.risks.length?`<b>Riscos apontados:</b><ul>${a.risks.map(r=>`<li>${esc(r)}</l
   }catch(error){saida.innerHTML=`<b>Auditoria indisponivel</b><p>${esc(error.message)}</p><p class="muted">O plano calculado acima continua valido; so a leitura do Claude falhou.</p>`}
   finally{botao.disabled=false;botao.textContent='Auditar com Claude'}
 };
+
+// ============================================================
+// MESA EARN — 03/09/2026
+//
+// A tela da Binance mostra o que esta aplicado; ela nao cobra o que NAO esta.
+// Em 03/09/2026 o Earn do Bruno rendia sobre quatro poeiras — C, HEMI, OPG e
+// USDC, uns cinco centavos somados — enquanto 14,19 USDT dormiam na Spot a 0%.
+//
+// Por isso esta aba tem duas listas, e a segunda e a que importa: o que esta
+// PARADO e quanto renderia. E por isso ela fala em DINHEIRO POR ANO, nao em
+// APR: "7,52% ao ano" soa muito e, nesta conta, vale menos de um dolar. Quem
+// decide com o numero certo na frente decide melhor.
+//
+// Nada aqui aplica ou resgata: a Binance pede confirmacao propria e a decisao
+// e do Bruno. A aba mostra, calcula e explica.
+// ============================================================
+const earnNav=document.createElement('button');earnNav.className='nav';earnNav.dataset.view='earn';earnNav.innerHTML='◈ <span>Earn</span>';document.querySelector('[data-view="broker"]').before(earnNav);
+const earnView=document.createElement('section');earnView.id='earn';earnView.className='view';earnView.innerHTML=`<div class="section-head"><div><p class="eyebrow">BINANCE SIMPLE EARN · LEITURA</p><h2>Mesa Earn</h2><p class="muted">O que rende, o que esta parado, e quanto isso vale por ano em dinheiro.</p></div><button class="primary" id="refreshEarn">Atualizar</button></div>
+<div class="metrics"><article><small>APLICADO</small><strong id="earnAplicado">—</strong><span id="earnAprMedio">APR medio ponderado</span></article><article><small>PARADO NA SPOT</small><strong id="earnParado">—</strong><span>Rendendo 0% hoje</span></article><article><small>GANHO ATUAL</small><strong id="earnGanhoAtual" class="positive">—</strong><span>Por ano, no ritmo de hoje</span></article><article><small>DEIXANDO DE GANHAR</small><strong id="earnGanhoPotencial" class="negative">—</strong><span>Por ano, se aplicasse o parado</span></article></div>
+<div id="earnAvisos" class="mesa-avisos"></div>
+<div class="grid-main"><article class="panel"><div class="panel-head"><div><small>RENDENDO</small><h3>O que ja esta no Earn</h3></div></div><div id="earnAplicadoLista"><div class="empty">Carregando…</div></div></article>
+<article class="panel"><div class="panel-head"><div><small>OPORTUNIDADE</small><h3>Parado na carteira Spot</h3></div><span class="tag">RESGATE IMEDIATO</span></div><div id="earnParadoLista"><div class="empty">Carregando…</div></div></article></div>
+<article class="panel"><small>COMO FUNCIONA</small><h3>Flexivel ou bloqueado</h3><div class="mnq-stats"><span>Flexivel · resgate <b>na hora</b></span><span>Bloqueado · so no vencimento</span><span>Flexivel · rende <b>por minuto</b></span><span>Bloqueado · pago diariamente</span><span>Flexivel · APR muda a cada minuto</span><span>Bloqueado · pode ser taxa fixa</span></div>
+<ul class="market-help"><li><b>Resgate antecipado do bloqueado perde os juros do periodo</b> — o que ja foi pago e descontado do principal devolvido, e o dinheiro leva ate 72h para voltar.</li><li><b>Principal protegido e em quantidade de token, nao em valor.</b> 1.000 USDT voltam 1.000 USDT; se o USDT perder a paridade, valem menos em dolar.</li><li><b>Inscricao automatica</b> move o saldo ocioso da Spot para o flexivel as 02:00 e 16:00 UTC — util para quem opera, porque o flexivel resgata na hora.</li><li><b>Bonus por faixa nao se aplica ao saldo inteiro.</b> A parte promocional cobre so os primeiros X do saldo; o excedente rende a taxa base.</li><li><b>APR nao e garantia.</b> Ele muda, e o rendimento passado nao se repete por contrato.</li></ul>
+<p class="disclaimer">Leitura da sua conta. Este painel nao aplica, nao resgata e nao recomenda produto financeiro.</p></article>`;
+document.querySelector('main').append(earnView);
+earnNav.onclick=()=>{show('earn');$('#viewTitle').textContent='Mesa Earn';carregarEarn()};
+
+const earnUsd=v=>Number.isFinite(Number(v))?`${number(Number(v),Math.abs(Number(v))<1?4:2)} USD`:'—';
+
+function linhaEarn(x,parado){
+  // Em dinheiro por ano ao lado do APR: sem isso "11,87%" parece muito quando
+  // o saldo e de dois milesimos de dolar.
+  const porAno=x.ganhoAnualUsd;
+  const nota=porAno<0.01?'menos de um centavo por ano':`${earnUsd(porAno)} por ano`;
+  return `<div class="live-position"><div><b>${esc(x.ativo)}</b><small>${number(x.quantidade,8)} · ${earnUsd(x.valorUsd)}</small></div><strong class="${parado?'negative':'positive'}">${number(x.apr,2)}%<br><small>${esc(nota)}</small></strong></div>`;
+}
+
+async function carregarEarn(){
+  const botao=$('#refreshEarn');botao.disabled=true;botao.textContent='Buscando…';
+  try{
+    const data=await spotApi('/api/earn/overview');
+    const t=data.totais;
+    $('#earnAplicado').textContent=earnUsd(t.totalAplicado);
+    $('#earnAprMedio').textContent=t.aprMedioPonderado?`APR medio ponderado ${number(t.aprMedioPonderado,2)}%`:'Sem posicao aplicada';
+    $('#earnParado').textContent=earnUsd(t.totalParado);
+    $('#earnGanhoAtual').textContent=earnUsd(t.ganhoAtualAno);
+    $('#earnGanhoPotencial').textContent=earnUsd(t.ganhoPotencialAno);
+    $('#earnAvisos').innerHTML=(data.avisos||[]).map(a=>`<div class="mesa-aviso ${esc(a.level)}"><b>${esc(a.title)}</b><span>${esc(a.message)}</span></div>`).join('');
+    $('#earnAplicadoLista').innerHTML=(data.aplicado||[]).map(x=>linhaEarn(x,false)).join('')||'<div class="empty">Nada aplicado no Simple Earn.</div>';
+    $('#earnParadoLista').innerHTML=(data.parado||[]).map(x=>linhaEarn(x,true)).join('')||'<div class="empty"><b>Nada parado com oferta disponivel.</b><br>Todo saldo elegivel ja esta rendendo.</div>';
+  }catch(error){
+    $('#earnAvisos').innerHTML=`<div class="mesa-aviso danger"><b>Nao foi possivel ler o Earn</b><span>${esc(error.message)}</span></div>`;
+    $('#earnAplicadoLista').innerHTML='<div class="empty">Sem dados.</div>';
+    $('#earnParadoLista').innerHTML='<div class="empty">Sem dados.</div>';
+  }finally{botao.disabled=false;botao.textContent='Atualizar'}
+}
+$('#refreshEarn').onclick=carregarEarn;

@@ -143,3 +143,44 @@ main{margin:0;padding:20px}
 .setup-fora{opacity:.55}
 .setup-motivo{display:block;margin-top:3px;font-size:11px;color:#8a6d3b;line-height:1.5}
 @media(max-width:600px){.chip{padding:10px 13px;font-size:13px}.spot-chips input{flex:1 1 100%}}
+
+/* ============================================================
+   O GUARDIÃO DO LUCRO — 05/09/2026
+
+   Fica ACIMA de tudo na mesa porque é a única coisa que pede ação. No
+   calor, ninguém lê parágrafo: lê número. Por isso a ordem vem em letra
+   grande, com o preço dentro do título.
+   ============================================================ */
+.guardiao { display: grid; gap: 8px; margin-bottom: 12px; }
+
+.gd-cabeca {
+  border-radius: 10px; padding: 11px 14px;
+  font-size: 15px; font-weight: 700;
+}
+.gd-agir { background: #3a1e12; color: #ffb37a; border-left: 4px solid #ff8a3d; }
+.gd-ok { background: #14291c; color: #7fdca0; border-left: 4px solid #2f9e50; }
+.gd-cabeca b { font-size: 19px; }
+
+.gd-ordem {
+  background: #131820; border: 1px solid #232c39; border-left: 5px solid #2f4256;
+  border-radius: 11px; padding: 13px 16px;
+}
+.gd-ordem header { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.gd-ordem header b { font-size: 15px; letter-spacing: .04em; }
+.gd-r { font-size: 13px; color: #7d8da3; font-variant-numeric: tabular-nums; }
+
+/* O título carrega o preço. É a linha que ele lê e executa. */
+.gd-titulo { font-size: 19px; font-weight: 800; margin: 0 0 5px; line-height: 1.25; }
+.gd-texto { font-size: 14px; line-height: 1.5; color: #9aabc0; margin: 0; }
+.gd-lucro { font-size: 13px; color: #7d8da3; margin: 8px 0 0; }
+.gd-lucro b { color: #e6edf5; font-variant-numeric: tabular-nums; }
+
+/* Cor pela urgência. Vermelho só para o que exige mão agora. */
+.gd-alta { border-left-color: #ff8a3d; }
+.gd-alta .gd-titulo { color: #ffb37a; }
+.gd-media { border-left-color: #f5b301; }
+.gd-media .gd-titulo { color: #ffd166; }
+.gd-baixa { border-left-color: #2f4256; }
+.gd-baixa .gd-titulo { color: #b8c6d6; font-weight: 700; font-size: 16px; }
+
+.gd-vazio { color: #7d8da3; font-size: 14px; padding: 10px 2px; }

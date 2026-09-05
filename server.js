@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const {PROP_PROFILES,ACCOUNT_RULES,TPT_RULES,LUCID_RULES,riskState,detectSetup,backtest}=require('./mnq-engine');
 const {ordensDaMesa,resumoDoGuardiao}=require('./guardiao-do-lucro');
+const {simularOrdem,margemParaRisco}=require('./calculadora-de-ordem');
 const {calculateSpotPlan}=require('./spot-engine');
 const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch}=require('./db');
 
@@ -64,6 +65,71 @@ function binanceConfig() {
     live: process.env.ENABLE_LIVE_TRADING === 'true',
     max: Number(process.env.MAX_ORDER_NOTIONAL || 100),
   };
+}
+
+// ============================================================
+// FUTURES — onde a alavancagem realmente mora (05/09/2026)
+//
+// `signedBinance` fala com api.binance.com, que é o SPOT. Posição de 10x não
+// existe lá: ela vive em fapi.binance.com, o Futures USDT-M. Eram dois
+// endereços diferentes, e por isso o painel nunca conseguiu ver a posição
+// alavancada que o Bruno abre de verdade.
+//
+// A chave é a MESMA; muda só o endereço e o caminho.
+// ============================================================
+function futuresBase() {
+  return process.env.BINANCE_FUTURES_URL || 'https://fapi.binance.com';
+}
+
+async function signedFutures(endpoint, method='GET', params={}) {
+  const cfg = binanceConfig();
+  if (!cfg.key || !cfg.secret) throw new Error('Binance ainda não configurada no servidor.');
+  const query = new URLSearchParams({...params, recvWindow:'5000', timestamp:String(Date.now())});
+  query.set('signature', crypto.createHmac('sha256', cfg.secret).update(query.toString()).digest('hex'));
+  const response = await fetch(`${futuresBase()}${endpoint}?${query}`, {method, headers:{'X-MBX-APIKEY':cfg.key}});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.msg || `Binance Futures respondeu ${response.status}`);
+  return data;
+}
+
+/**
+ * AS POSIÇÕES ALAVANCADAS, AO VIVO.
+ *
+ * A Binance já calcula e devolve o que a tela dela esconde em abas
+ * diferentes: preço de liquidação, alavancagem, margem e resultado não
+ * realizado. Aqui tudo aparece na mesma linha.
+ *
+ * Só entra o que tem quantidade diferente de zero — a Binance devolve TODOS
+ * os pares, e a lista sem filtro passa de 300 linhas vazias.
+ */
+async function posicoesAlavancadas() {
+  const cru = await signedFutures('/fapi/v2/positionRisk');
+  return (Array.isArray(cru) ? cru : [])
+    .filter(p => Number(p.positionAmt) !== 0)
+    .map(p => {
+      const qtd = Number(p.positionAmt);
+      const entrada = Number(p.entryPrice);
+      const marca = Number(p.markPrice);
+      const direcao = qtd > 0 ? 'LONG' : 'SHORT';
+      const notional = Math.abs(qtd) * marca;
+      const liq = Number(p.liquidationPrice);
+      return {
+        simbolo: p.symbol,
+        direcao,
+        quantidade: Math.abs(qtd),
+        precoEntrada: entrada,
+        precoAtual: marca,
+        alavancagem: Number(p.leverage),
+        margem: Number(p.isolatedMargin) || (notional / (Number(p.leverage) || 1)),
+        isolada: p.marginType === 'isolated',
+        valorDaPosicao: notional,
+        lucroAberto: Number(p.unRealizedProfit),
+        precoDeLiquidacao: liq > 0 ? liq : null,
+        // A distância até a liquidação é o número que decide se dá para
+        // dormir com a posição aberta — e a Binance nunca mostra em %.
+        distanciaAteLiquidacaoPct: liq > 0 ? Math.abs((liq / marca - 1) * 100) : null,
+      };
+    });
 }
 
 async function signedBinance(endpoint, method='GET', params={}) {
@@ -534,6 +600,46 @@ async function api(req, res, pathname) {
     }
     if (pathname === '/api/positions/quote' && req.method === 'GET') {const symbol=String(new URL(req.url,'http://localhost').searchParams.get('symbol')||'').toUpperCase();if(!/^(MNQ|[A-Z0-9]{5,20})$/.test(symbol))return json(res,400,{error:'Ativo inválido.'});return json(res,200,{symbol,price:await publicPrice(symbol),currency:symbol==='MNQ'?'USD':'USDT',feed:symbol==='MNQ'?'CME via feed público':'Binance',updatedAt:new Date().toISOString()});}
     if (pathname === '/api/positions/monitor' && req.method === 'GET') return json(res,200,await monitorPositions());
+    // A ORDEM ANTES DE CLICAR. O Bruno digita o que vai fazer e vê o valor da
+    // compra, o lucro no alvo, a perda no stop, as taxas e — o que a Binance
+    // esconde numa aba — o preço de liquidação.
+    if (pathname === '/api/ordem/simular' && req.method === 'POST') {
+      const corpo = await body(req);
+      return json(res, 200, simularOrdem({
+        margem: Number(corpo.margem), alavancagem: Number(corpo.alavancagem),
+        precoEntrada: Number(corpo.precoEntrada), stop: Number(corpo.stop || 0),
+        alvo: Number(corpo.alvo || 0), direcao: corpo.direcao === 'SHORT' ? 'SHORT' : 'LONG',
+      }));
+    }
+
+    // O caminho inverso, e o que deveria ser o padrão: diz quanto pode perder
+    // e o tamanho da ordem sai como consequência.
+    if (pathname === '/api/ordem/pelo-risco' && req.method === 'POST') {
+      const corpo = await body(req);
+      const r = margemParaRisco({
+        perdaMaximaUsdt: Number(corpo.perdaMaxima), precoEntrada: Number(corpo.precoEntrada),
+        stop: Number(corpo.stop), direcao: corpo.direcao === 'SHORT' ? 'SHORT' : 'LONG',
+        alavancagem: Number(corpo.alavancagem || 10),
+      });
+      return r ? json(res, 200, r)
+               : json(res, 400, { erro: 'Confira o preço de entrada e o stop — o stop precisa estar do lado certo da entrada.' });
+    }
+
+    if (pathname === '/api/binance/posicoes' && req.method === 'GET') {
+      try {
+        const posicoes = await posicoesAlavancadas();
+        const ordens = ordensDaMesa(posicoes.map(p => ({
+          simbolo: p.simbolo, entrada: p.precoEntrada,
+          // Sem stop cadastrado, a liquidação É o stop — e é o pior stop que
+          // existe, porque leva a margem inteira junto.
+          stopInicial: 0, preco: p.precoAtual, pico: p.precoAtual,
+          direcao: p.direcao, quantidade: p.quantidade, moeda: 'USDT',
+        })));
+        return json(res, 200, { posicoes, ordens, atualizadoEm: new Date().toISOString() });
+      } catch (error) {
+        return json(res, 200, { posicoes: [], erro: error.message, atualizadoEm: new Date().toISOString() });
+      }
+    }
     if (pathname === '/api/positions/watch' && req.method === 'POST') {const data=await body(req),symbol=String(data.symbol||'').toUpperCase(),direction=String(data.direction||'LONG').toUpperCase(),entry=Number(data.entry),quantity=Number(data.quantity),stop=Number(data.stop||0),target=Number(data.target||0),trailingPct=Number(data.trailingPct||0);if(!/^(MNQ|[A-Z0-9]{5,20})$/.test(symbol)||!['LONG','SHORT'].includes(direction)||!Number.isFinite(entry)||entry<=0||!Number.isFinite(quantity)||quantity<=0||trailingPct<0||trailingPct>20)return json(res,400,{error:'Monitor inválido.'});await publicPrice(symbol);const saved=await savePositionWatch({symbol,direction,entry,quantity,stop,target,trailingPct});return json(res,201,{ok:true,saved,monitor:await monitorPositions()});}
     if (pathname === '/api/ledger' && req.method === 'POST') {
       const entry=await body(req),type=String(entry.type||''),description=String(entry.description||'').trim(),amountBrl=Number(entry.amountBrl||0),amountUsdt=Number(entry.amountUsdt||0);

@@ -181,3 +181,99 @@ test('toda decisão traz um texto que explica — inclusive as de não operar', 
     assert.ok(c.motivo);
   }
 });
+
+// ============================================================
+// OS QUATRO BUGS DE 07/09/2026
+//
+// Achados atacando o próprio código depois de ele estar pronto e no ar. Cada
+// um destes testes existe porque o robô teria feito algo errado com dinheiro
+// de verdade — e três deles em silêncio, sem nunca dar erro.
+// ============================================================
+
+const { contarPosicoes, minhasOrdens, entradasVencidas } = require('../robo');
+
+test('BUG 1: a carteira do Bruno não conta para o teto de posições', () => {
+  // Ele guarda BTC, ETH e SOL há meses. Isso não é risco que o robô tomou.
+  // A versão anterior contava as três, batia no teto de 3 no primeiro ciclo e
+  // ficava PARADO para sempre dizendo POSICOES_CHEIAS. Nunca teria comprado.
+  const carteira = [{ simbolo: 'BTCUSDT' }, { simbolo: 'ETHUSDT' }, { simbolo: 'SOLUSDT' }];
+  const c = contarPosicoes({ minhas: [], carteira });
+  assert.equal(c.posicoesAbertas, 0, 'a carteira dele não é posição do robô');
+  assert.equal(c.naCarteira, 3);
+
+  const d = decidir({ candidatos: [CANDIDATO], estado: { ...CONTA_BOA, ...c }, config: {}, plano: planoDe() });
+  assert.equal(d.acao, 'COMPRAR', 'com a carteira cheia ele ainda deve poder operar');
+});
+
+test('BUG 1b: mas ele não mexe num par que o Bruno já tem', () => {
+  // Comprar o que ele já guarda mistura o estoque: o dia em que ele vender na
+  // mão, o stop do robô fica sem saldo para executar.
+  const c = contarPosicoes({ minhas: [], carteira: [{ simbolo: 'ARBUSDT' }] });
+  assert.ok(c.paresAbertos.includes('ARBUSDT'));
+  const d = decidir({ candidatos: [CANDIDATO], estado: { ...CONTA_BOA, ...c }, config: {}, plano: planoDe() });
+  assert.equal(d.acao, 'ESPERAR', 'ARBUSDT já está na carteira dele');
+});
+
+test('BUG 2: entrada que ainda não preencheu conta e impede comprar de novo', () => {
+  // A moeda não chegou na carteira, então ela era invisível — e o ciclo
+  // seguinte comprava o MESMO par outra vez, dobrando a posição em silêncio.
+  const c = contarPosicoes({ minhas: [{ simbolo: 'ARBUSDT', estado: 'AGUARDANDO' }], carteira: [] });
+  assert.equal(c.posicoesAbertas, 1);
+  assert.ok(c.paresAbertos.includes('ARBUSDT'));
+  const d = decidir({ candidatos: [CANDIDATO], estado: { ...CONTA_BOA, ...c }, config: {}, plano: planoDe() });
+  assert.equal(d.acao, 'ESPERAR', 'não pode comprar ARBUSDT de novo com a entrada na fila');
+});
+
+test('BUG 2b: posição já fechada não ocupa vaga', () => {
+  const c = contarPosicoes({ minhas: [{ simbolo: 'ARBUSDT', estado: 'FECHADA' }, { simbolo: 'OPUSDT', estado: 'CANCELADA' }], carteira: [] });
+  assert.equal(c.posicoesAbertas, 0);
+  assert.deepEqual(c.paresAbertos, []);
+});
+
+test('BUG 2c: desprotegida ocupa vaga — é a que mais precisa de atenção', () => {
+  const c = contarPosicoes({ minhas: [{ simbolo: 'ARBUSDT', estado: 'DESPROTEGIDA' }], carteira: [] });
+  assert.equal(c.posicoesAbertas, 1);
+});
+
+test('BUG 3: o trailing só cancela ordem do próprio trade', () => {
+  // A versão anterior mandava DELETE /openOrders com o símbolo, que apaga
+  // TODAS as ordens abertas do par — inclusive as que o Bruno pôs na mão.
+  const abertas = [
+    { clientOrderId: 'btXYZARBUSDTs', side: 'SELL' },   // stop do robô
+    { clientOrderId: 'btXYZARBUSDTa', side: 'SELL' },   // alvo do robô
+    { clientOrderId: 'btXYZARBUSDTt9k2s', side: 'SELL' }, // trailing anterior
+    { clientOrderId: 'minha-ordem-do-bruno', side: 'SELL' },
+    { clientOrderId: 'web_4f9a2b', side: 'SELL' },       // colocada pelo site da Binance
+    { clientOrderId: 'btOUTRODIFERENTEs', side: 'SELL' },
+  ];
+  const minhas = minhasOrdens(abertas, 'btXYZARBUSDT', 'SELL');
+  assert.equal(minhas.length, 3);
+  assert.ok(minhas.every(o => o.clientOrderId.startsWith('btXYZARBUSDT')));
+  assert.ok(!minhas.some(o => o.clientOrderId === 'minha-ordem-do-bruno'), 'nunca cancelar ordem do Bruno');
+  assert.ok(!minhas.some(o => o.clientOrderId === 'web_4f9a2b'), 'nunca cancelar ordem feita no site');
+});
+
+test('BUG 3b: sem ordemId não cancela nada — silêncio é melhor que às cegas', () => {
+  assert.deepEqual(minhasOrdens([{ clientOrderId: 'qualquer', side: 'SELL' }], ''), []);
+});
+
+test('BUG 4: entrada parada há muito tempo vence', () => {
+  // Ordem limite GTC espera para sempre. Preencher tarde é pior do que não
+  // preencher: entra num setup que já não existe, com stop de um mercado que
+  // já mudou.
+  const agora = Date.parse('2026-09-07T12:00:00Z');
+  const posicoes = [
+    { simbolo: 'AUSDT', estado: 'AGUARDANDO', criada_em: '2026-09-07T11:40:00Z' }, // 20 min
+    { simbolo: 'BUSDT', estado: 'AGUARDANDO', criada_em: '2026-09-07T11:55:00Z' }, // 5 min
+    { simbolo: 'CUSDT', estado: 'ABERTA', criada_em: '2026-09-06T00:00:00Z' },     // comprada, não expira
+  ];
+  const vencidas = entradasVencidas(posicoes, 15, agora);
+  assert.equal(vencidas.length, 1);
+  assert.equal(vencidas[0].simbolo, 'AUSDT');
+});
+
+test('BUG 4b: posição comprada nunca vence por tempo', () => {
+  const agora = Date.parse('2026-09-07T12:00:00Z');
+  const antiga = [{ simbolo: 'X', estado: 'ABERTA', criada_em: '2025-01-01T00:00:00Z' }];
+  assert.deepEqual(entradasVencidas(antiga, 15, agora), [], 'quem já comprou sai pelo stop ou pelo alvo, não pelo relógio');
+});

@@ -32,6 +32,12 @@
 // A Binance considera preenchido só o que já executou. PARTIALLY_FILLED conta
 // como posição aberta: existe moeda comprada, ainda que menos do que se pediu.
 const VIVOS = new Set(['NEW', 'PARTIALLY_FILLED', 'PENDING_NEW']);
+
+// Quanto tempo a Binance tem para armar as pernas pendentes do OTOCO depois
+// que a entrada preenche. Noventa segundos e folgado de proposito: errar para
+// mais custa um ciclo de atraso no alerta; errar para menos faz o robo
+// duplicar a protecao de uma posicao que estava certa.
+const JANELA_PARA_ARMAR_MS = 90000;
 const MORTOS = new Set(['CANCELED', 'REJECTED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'PENDING_CANCEL']);
 
 function n(valor) {
@@ -89,7 +95,8 @@ function somarTaxas(fills = [], moedaCotacao = 'USDT') {
  * quando ainda não existe — as pendentes do OTOCO só nascem depois que a
  * entrada preenche.
  */
-function lerPosicao({ entrada, alvo, stop, fillsEntrada = [], fillsSaida = [], moedaCotacao = 'USDT' } = {}) {
+function lerPosicao({ entrada, alvo, stop, fillsEntrada = [], fillsSaida = [], moedaCotacao = 'USDT',
+                     agoraMs = Date.now(), janelaDeArmarMs = JANELA_PARA_ARMAR_MS } = {}) {
   const entrou = executou(entrada);
   const statusEntrada = String(entrada?.status || '').toUpperCase();
 
@@ -145,19 +152,51 @@ function lerPosicao({ entrada, alvo, stop, fillsEntrada = [], fillsSaida = [], m
     };
   }
 
-  // Comprou e as duas pernas de saída morreram sem executar. A posição existe
-  // e está no mercado SEM NADA SEGURANDO.
-  const alvoMorto = !alvo || MORTOS.has(String(alvo.status || '').toUpperCase());
-  const stopMorto = !stop || MORTOS.has(String(stop.status || '').toUpperCase());
-  if (alvoMorto && stopMorto) {
+  // ------------------------------------------------------------
+  // "NAO EXISTE" NAO E "MORREU" — corrigido em 07/09/2026
+  //
+  // A primeira versao tratava perna nula como perna morta. Parece detalhe e
+  // nao e: num OTOCO as pernas de saida SO NASCEM quando a entrada preenche.
+  // Existe uma janela de segundos em que a entrada ja executou e o alvo e o
+  // stop ainda nao aparecem na consulta.
+  //
+  // Nessa janela o robo declarava DESPROTEGIDA e — muito pior — a rotina de
+  // reprotecao colocava um OCO novo. Ai a protecao do proprio OTOCO armava
+  // tambem, e a posicao ficava com DUAS ordens de venda para uma compra so.
+  // Uma delas executaria e a outra ficaria vendendo o que nao existe.
+  //
+  // Consultar uma ordem que a Binance nao criou devolve nada; consultar uma
+  // que foi cancelada devolve status CANCELED. Sao coisas diferentes e agora
+  // sao lidas como coisas diferentes.
+  //
+  // O relogio desempata: se passou da janela e as pernas continuam sem
+  // aparecer, entao elas nao vem mais — e aí sim e desprotecao de verdade.
+  // ------------------------------------------------------------
+  const nula = (perna) => !perna;
+  const morta = (perna) => Boolean(perna) && MORTOS.has(String(perna.status || '').toUpperCase());
+  const semGuarda = (nula(alvo) || morta(alvo)) && (nula(stop) || morta(stop));
+
+  if (semGuarda) {
+    const aindaNasceram = nula(alvo) && nula(stop);
+    const preenchidaEm = Number(entrada?.updateTime) || 0;
+    const armando = aindaNasceram && preenchidaEm > 0 && (agoraMs - preenchidaEm) < janelaDeArmarMs;
+
+    if (armando) {
+      return {
+        estado: 'ARMANDO',
+        saidaTipo: null,
+        quantidade, precoEntrada, custo, taxas: taxaEntrada.taxas,
+        texto: 'A entrada acabou de preencher e a Binance está armando o stop e o alvo. Não é desproteção — é o OTOCO trabalhando.',
+      };
+    }
+
     return {
       estado: 'DESPROTEGIDA',
       saidaTipo: null,
-      quantidade,
-      precoEntrada,
-      custo,
-      taxas: taxaEntrada.taxas,
-      texto: 'A entrada preencheu mas não há stop nem alvo ativos na Binance. A posição está no mercado sem nada segurando — isto exige ação agora.',
+      quantidade, precoEntrada, custo, taxas: taxaEntrada.taxas,
+      texto: aindaNasceram
+        ? 'A entrada preencheu e o stop e o alvo nunca chegaram a existir na Binance. A causa mais comum é a comissão ter sido cobrada na própria moeda, deixando saldo menor do que a venda programada. A posição está no mercado sem nada segurando.'
+        : 'A entrada preencheu mas o stop e o alvo foram cancelados. A posição está no mercado sem nada segurando — isto exige ação agora.',
     };
   }
 
@@ -189,4 +228,4 @@ function perdaDoDia(posicoesFechadas = []) {
   return { perda, ganho, liquido: ganho - perda, trades };
 }
 
-module.exports = { lerPosicao, precoMedio, somarTaxas, perdaDoDia, VIVOS, MORTOS };
+module.exports = { lerPosicao, precoMedio, somarTaxas, perdaDoDia, VIVOS, MORTOS, JANELA_PARA_ARMAR_MS };

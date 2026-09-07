@@ -45,7 +45,8 @@ conclui o que houve.
 |---|---|
 | `AGUARDANDO` | A entrada está na fila e não preencheu |
 | `ABERTA` | Comprada, com stop e alvo ativos na Binance |
-| `DESPROTEGIDA` | **Comprada e sem nada segurando.** Alguém cancelou o OCO, ou um trailing falhou no meio. Alerta crítico e recolocação automática |
+| `ARMANDO` | Preencheu agora e a Binance está criando o stop e o alvo. Não é desproteção — é o OTOCO trabalhando |
+| `DESPROTEGIDA` | **Comprada e sem nada segurando.** Alguém cancelou o OCO, um trailing falhou, ou a proteção nunca conseguiu nascer. Alerta crítico e recolocação automática |
 | `FECHADA` | Saiu no alvo ou no stop, com resultado líquido de taxas |
 | `CANCELADA` | A entrada morreu sem preencher — não é prejuízo, é trade que não houve |
 
@@ -109,6 +110,52 @@ Ordens abertas que ele não reconhece são **reportadas, nunca canceladas** —
 podem ser suas, colocadas na mão. Robô que apaga ordem de gente é pior do que
 robô que não sabe de nada.
 
+### Sete bugs achados atacando o próprio código
+
+Depois de o robô estar pronto e no ar, o código foi revisado como se o objetivo
+fosse quebrá-lo. Sete problemas apareceram — **seis deles em silêncio**, sem
+nunca dar erro. Ficam registrados porque a próxima pessoa que mexer aqui vai
+ser tentada a "simplificar" exatamente estes pontos.
+
+**1. A carteira do Bruno contava como posição do robô.** Ele contava toda moeda
+da carteira valendo mais de 5 USDT. Com BTC, ETH e alguns alts guardados, o
+robô batia no teto de 3 posições no primeiro ciclo e ficava `POSICOES_CHEIAS`
+para sempre. **Ele nunca teria comprado nada.** São duas perguntas diferentes:
+*quantas posições eu abri* (só as minhas contam para o teto) e *em que pares eu
+não mexo* (as minhas mais a carteira dele).
+
+**2. Entrada na fila era invisível.** A moeda ainda não está na carteira, então
+uma entrada não preenchida não contava — e o ciclo seguinte comprava **o mesmo
+par outra vez**, dobrando a posição em silêncio.
+
+**3. O trailing cancelava ordem que não era dele.** Usava
+`DELETE /openOrders` com o símbolo, que apaga **todas** as ordens abertas do par
+— inclusive as colocadas na mão. O README prometia o contrário do que o código
+fazia. Agora cancela pelo prefixo do próprio `ordem_id`.
+
+**4. Entrada nunca vencia.** Ordem limite GTC espera para sempre, segurando USDT
+e uma vaga de posição por uma ideia que já venceu. Preencher tarde é pior do
+que não preencher: entra num setup que já não existe, com um stop calculado
+para um mercado que já mudou. Agora expira em 15 minutos.
+
+**5. "Não existe" era lido como "morreu".** Num OTOCO as pernas de saída só
+nascem quando a entrada preenche. Nessa janela de segundos o robô declarava
+`DESPROTEGIDA` e a reproteção colocava um OCO novo — deixando **duas ordens de
+venda para uma compra só**. Consultar ordem inexistente devolve nada;
+consultar ordem cancelada devolve `CANCELED`. Agora são coisas diferentes, com
+o relógio desempatando.
+
+**6. A proteção era dimensionada pelo que comprou, não pelo que tem.** Sem BNB
+para pagar taxa, a Binance cobra a comissão na própria moeda: você pede 100 ARB
+e ficam 99,9 na carteira. A venda programada para 100 é recusada por saldo
+insuficiente e a **posição fica nua**. Agora a proteção é sempre dimensionada
+pelo saldo real, arredondado para baixo no `stepSize`.
+
+**7. Alvo recusado derrubava o stop junto.** O alvo é `LIMIT_MAKER`; se o preço
+já passou dele, a Binance recusa a lista OCO inteira — e a posição fica sem
+stop. Agora, se o par não entra, **o stop entra sozinho**: perder o alvo custa
+lucro, perder o stop custa a conta.
+
 ### O que ele não faz
 
 - Não opera alavancado, margem, futuros nem short.
@@ -171,7 +218,7 @@ O que falta aparece em âmbar, não em vermelho — falta configurar não é def
 ## Como testar tudo
 
 ```bash
-npm test        # 115 testes: decisão, risco, resultado, limites e menu
+npm test        # 129 testes: decisão, risco, resultado, limites e menu
 npm run rotas   # bate em todas as rotas e classifica o que responde
 ```
 

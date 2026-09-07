@@ -257,7 +257,7 @@ async function abrirPosicao(p){
 async function posicoesEmAberto(){
   const db=database();if(!db)return [];
   return (await db.query(`SELECT id,ordem_id,order_list_id,simbolo,estado,quantidade_pedida::float8,entrada_pedida::float8,stop_pedido::float8,alvo_pedido::float8,quantidade::float8,preco_entrada::float8,pico_preco::float8,stop_atual::float8,trailing_degrau,criada_em
-    FROM robo_posicoes WHERE estado IN ('AGUARDANDO','ABERTA','DESPROTEGIDA') ORDER BY criada_em ASC`)).rows;
+    FROM robo_posicoes WHERE estado IN ('AGUARDANDO','ABERTA','ARMANDO','DESPROTEGIDA') ORDER BY criada_em ASC`)).rows;
 }
 
 async function atualizarPosicao(ordemId,campos={}){

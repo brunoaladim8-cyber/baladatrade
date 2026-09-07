@@ -623,6 +623,7 @@ document.querySelector('[data-view="robo"]')?.addEventListener('click', () => {
 
 const ROBO_ESTADOS = {
   AGUARDANDO: { rotulo: 'Na fila', cor: 'espera' },
+  ARMANDO: { rotulo: 'Armando stop', cor: 'espera' },
   ABERTA: { rotulo: 'Comprada', cor: 'ok' },
   DESPROTEGIDA: { rotulo: 'SEM STOP', cor: 'perigo' },
   FECHADA: { rotulo: 'Fechada', cor: 'neutro' },
@@ -652,7 +653,7 @@ function pintarPosicoesRobo(dados) {
     $('#roboHoje').className = hoje.liquido > 0 ? 'positive' : hoje.liquido < 0 ? 'negative' : '';
     $('#roboHojeHint').textContent = `${hoje.trades} fechado(s) · perdeu ${number(hoje.perda, 2)}`;
   }
-  const abertas = linhas.filter(p => p.estado === 'ABERTA').length;
+  const abertas = linhas.filter(p => p.estado === 'ABERTA' || p.estado === 'ARMANDO').length;
   const semStop = linhas.filter(p => p.estado === 'DESPROTEGIDA').length;
   $('#roboAbertas').textContent = String(abertas + semStop);
   $('#roboAbertasHint').textContent = semStop

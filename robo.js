@@ -70,6 +70,8 @@ const CONFIG_PADRAO = {
   perdaMaximaDiaUsdt: 0,    // 0 = desligado. Acima disso, para o dia inteiro.
   alvoEmR: 2,              // alvo = 2x o que arrisca
   stopEmAtr: 1.5,          // stop = 1,5 ATR abaixo da entrada
+  minutosParaEntrar: 15,    // depois disso a entrada que não preencheu é cancelada:
+                            // o sinal que justificava aquele preço já venceu
   paresPermitidos: [],      // vazio = qualquer par que passe na peneira
   paresProibidos: [],
 };
@@ -100,6 +102,7 @@ function normalizarConfig(entrada = {}) {
     perdaMaximaDiaUsdt: numero(c.perdaMaximaDiaUsdt, 0, 1000000, 0),
     alvoEmR: numero(c.alvoEmR, 1, 10, 2),
     stopEmAtr: numero(c.stopEmAtr, 0.5, 5, 1.5),
+    minutosParaEntrar: numero(c.minutosParaEntrar, 1, 1440, 15),
     paresPermitidos: Array.isArray(c.paresPermitidos) ? c.paresPermitidos.map(String) : [],
     paresProibidos: Array.isArray(c.paresProibidos) ? c.paresProibidos.map(String) : [],
   };
@@ -170,6 +173,79 @@ function travasDeRisco(estado = {}, config = CONFIG_PADRAO) {
   }
 
   return { travas, liberado: travas.length === 0 };
+}
+
+// ------------------------------------------------------------
+// QUEM CONTA COMO POSICAO — e por que sao duas perguntas
+//
+// Este bloco existe por causa de um bug que teria impedido o robo de comprar
+// qualquer coisa, para sempre, sem nunca dar erro.
+//
+// A primeira versao contava como "posicao aberta" toda moeda da carteira que
+// valesse mais de 5 USDT. Numa carteira normal — BTC, ETH e alguns alts — isso
+// dava cinco, seis, sete "posicoes". Com teto de 3, o robo batia em
+// POSICOES_CHEIAS no primeiro ciclo e ficava PARADO enquanto o mercado andava.
+//
+// Sao duas perguntas com respostas diferentes:
+//
+//   Quantas posicoes EU abri?   → so as minhas. O teto e sobre o risco que EU
+//                                 estou tomando, nao sobre o que o Bruno
+//                                 guarda ha meses e nao pretende vender.
+//
+//   Em que pares eu nao mexo?   → as minhas MAIS a carteira dele. Comprar uma
+//                                 moeda que ele ja tem mistura o estoque: o
+//                                 dia em que ele vender na mao, o meu stop
+//                                 fica sem saldo para executar.
+//
+// E as minhas incluem as que ainda NAO preencheram. Sem isso uma entrada na
+// fila e invisivel — a moeda nao chegou na carteira — e o ciclo seguinte
+// compra o mesmo par outra vez, dobrando a posicao em silencio.
+// ------------------------------------------------------------
+function contarPosicoes({ minhas = [], carteira = [] } = {}) {
+  const simbolo = (x) => String(x?.simbolo || x?.symbol || x || '').toUpperCase();
+  const minhasAbertas = minhas.filter((p) => ['AGUARDANDO', 'ABERTA', 'ARMANDO', 'DESPROTEGIDA'].includes(p?.estado));
+  return {
+    posicoesAbertas: minhasAbertas.length,
+    paresAbertos: [...new Set([...carteira.map(simbolo), ...minhasAbertas.map(simbolo)].filter(Boolean))],
+    naCarteira: carteira.length,
+  };
+}
+
+/**
+ * As ordens abertas que sao DESTE trade, e nenhuma outra.
+ *
+ * Todas as pernas de uma posicao comecam com o mesmo `ordemId` — as originais
+ * (`{id}e`, `{id}a`, `{id}s`) e as de cada trailing (`{id}t...`). E esse
+ * prefixo que separa o que e do robo do que e do Bruno.
+ *
+ * A versao anterior do trailing cancelava com DELETE /openOrders passando so o
+ * simbolo, o que apaga TODAS as ordens abertas daquele par — inclusive as que
+ * o Bruno tivesse colocado na mao. O README prometia o contrario do que o
+ * codigo fazia.
+ */
+function minhasOrdens(abertas = [], ordemId = '', lado = 'SELL') {
+  if (!ordemId) return [];
+  return abertas.filter((o) => String(o?.clientOrderId || '').startsWith(ordemId) && (!lado || o?.side === lado));
+}
+
+/**
+ * As entradas que esperaram demais.
+ *
+ * A entrada e uma ordem limite GTC: sem prazo, ela espera para sempre. Ordem
+ * parada nao e neutra — segura USDT que nao pode ser usado em outro setup,
+ * ocupa uma vaga de posicao, e representa uma ideia que ja venceu. O sinal que
+ * justificou aquele preco valia quinze minutos, nao tres dias.
+ *
+ * Preencher tarde e pior do que nao preencher: entra num setup que ja nao
+ * existe, com um stop calculado para um mercado que ja mudou.
+ */
+function entradasVencidas(posicoes = [], minutos = 15, agoraMs = Date.now()) {
+  const limite = Math.max(1, Number(minutos) || 15) * 60000;
+  return posicoes.filter((p) => {
+    if (p?.estado !== 'AGUARDANDO') return false;
+    const nascida = new Date(p?.criada_em || p?.criadaEm || 0).getTime();
+    return Number.isFinite(nascida) && nascida > 0 && agoraMs - nascida > limite;
+  });
 }
 
 // ------------------------------------------------------------
@@ -431,6 +507,9 @@ module.exports = {
   R_MINIMO_ACEITAVEL,
   normalizarConfig,
   travasDeRisco,
+  contarPosicoes,
+  minhasOrdens,
+  entradasVencidas,
   escolherCandidato,
   precosDoTrade,
   idDoTrade,

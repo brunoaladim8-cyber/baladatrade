@@ -132,3 +132,56 @@ test('aceita tanto Headers do fetch quanto objeto simples', () => {
   l.registrar(200, new Headers({ 'x-mbx-used-weight-1m': '42' }), 0);
   assert.equal(l.estado(0).pesoUsado, 42);
 });
+
+// ============================================================
+// "NÃO EXISTE" NÃO É "MORREU" — o bug mais perigoso dos sete
+//
+// Num OTOCO as pernas de saída só nascem quando a entrada preenche. A primeira
+// versão lia perna nula como perna morta, declarava DESPROTEGIDA nessa janela,
+// e a reproteção colocava um OCO novo — deixando DUAS ordens de venda para uma
+// compra só.
+// ============================================================
+
+const AGORA = Date.parse('2026-09-07T12:00:00Z');
+const cheia = (msAtras) => ({ status: 'FILLED', executedQty: '10', cummulativeQuoteQty: '1000', updateTime: AGORA - msAtras });
+
+test('acabou de preencher e as pernas ainda não nasceram: é ARMANDO, não desproteção', () => {
+  const r = lerPosicao({ entrada: cheia(5000), alvo: null, stop: null, agoraMs: AGORA });
+  assert.equal(r.estado, 'ARMANDO');
+  assert.match(r.texto, /OTOCO trabalhando/);
+});
+
+test('passou da janela e as pernas nunca apareceram: aí sim é DESPROTEGIDA', () => {
+  const r = lerPosicao({ entrada: cheia(200000), alvo: null, stop: null, agoraMs: AGORA });
+  assert.equal(r.estado, 'DESPROTEGIDA');
+  // A causa mais provável precisa estar no texto: é a que o Bruno vai checar.
+  assert.match(r.texto, /comissão/i);
+});
+
+test('pernas canceladas de verdade são desproteção na hora, sem esperar janela', () => {
+  const r = lerPosicao({
+    entrada: cheia(1000),
+    alvo: { status: 'CANCELED', executedQty: '0', cummulativeQuoteQty: '0' },
+    stop: { status: 'CANCELED', executedQty: '0', cummulativeQuoteQty: '0' },
+    agoraMs: AGORA,
+  });
+  assert.equal(r.estado, 'DESPROTEGIDA');
+  assert.match(r.texto, /cancelados/);
+});
+
+test('uma perna viva basta para a posição estar protegida', () => {
+  const r = lerPosicao({
+    entrada: cheia(1000),
+    alvo: { status: 'CANCELED', executedQty: '0', cummulativeQuoteQty: '0' },
+    stop: { status: 'NEW', executedQty: '0', cummulativeQuoteQty: '0' },
+    agoraMs: AGORA,
+  });
+  assert.equal(r.estado, 'ABERTA');
+});
+
+test('sem updateTime não inventa janela: trata como desprotegida', () => {
+  // Errar para o lado do alarme é o certo aqui. Alarme falso custa um susto;
+  // desproteção silenciosa custa a posição.
+  const r = lerPosicao({ entrada: { status: 'FILLED', executedQty: '10', cummulativeQuoteQty: '1000' }, alvo: null, stop: null, agoraMs: AGORA });
+  assert.equal(r.estado, 'DESPROTEGIDA');
+});

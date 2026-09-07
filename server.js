@@ -5,11 +5,11 @@ const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const {PROP_PROFILES,ACCOUNT_RULES,TPT_RULES,LUCID_RULES,riskState,detectSetup,backtest}=require('./mnq-engine');
 const {simularOrdem,margemParaRisco}=require('./calculadora-de-ordem');
-const {calculateSpotPlan,roundStep:roundStepSpot}=require('./spot-engine');
+const {calculateSpotPlan,roundStep:roundStepSpot,floorStep:floorStepSpot}=require('./spot-engine');
 const {criarLimites}=require('./limites');
 const {lerPosicao,perdaDoDia}=require('./resultado');
 const {ordensDaMesa,resumoDoGuardiao,ordemDoGuardiao}=require('./guardiao-do-lucro');
-const {normalizarConfig,escolherCandidato,precosDoTrade,decidir:decidirRobo,CONFIG_PADRAO}=require('./robo');
+const {normalizarConfig,escolherCandidato,precosDoTrade,decidir:decidirRobo,contarPosicoes,minhasOrdens,entradasVencidas,CONFIG_PADRAO}=require('./robo');
 const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo}=require('./db');
 
 const root = path.join(__dirname, 'public');
@@ -680,30 +680,32 @@ async function trailingDoGuardiao(pos, precoAtual) {
   const geracao = `t${Date.now().toString(36).slice(-5)}`;
   const novoId = `${pos.ordem_id}${geracao}`.slice(0, 36);
 
-  // 1) cancela o OCO atual — a janela descoberta começa aqui
-  await signedBinance('/api/v3/openOrders', 'DELETE', { symbol: pos.simbolo });
+  // 1) cancela SÓ a proteção deste trade — a janela descoberta começa aqui
+  //
+  // Isto era `DELETE /api/v3/openOrders` com o símbolo, que apaga TODAS as
+  // ordens abertas daquele par — inclusive as que o Bruno tivesse colocado na
+  // mão. O README prometia "o robô não cancela o que não é dele" e o código
+  // fazia o contrário, sem avisar. Agora cancela pelo nome das próprias
+  // pernas: cancelar uma perna do OCO derruba o par inteiro, e nada mais.
+  const canceladas = await cancelarProtecao(pos);
+  if (!canceladas.length) return { mexeu: false, ordem, texto: 'Não achei a proteção atual para trocar. Deixei como está — melhor não mexer do que cancelar às cegas.' };
   await atualizarPosicao(pos.ordem_id, { estado: 'DESPROTEGIDA', texto: 'Trocando o stop de lugar. A posição fica descoberta por alguns segundos.' }).catch(() => {});
 
   // 2) recoloca com o stop mais alto — e fecha a janela
+  const nova = await protegerPosicao(pos, { stop: novoStop, alvo: Number(pos.alvo_pedido), motivo: 'trailing' });
   try {
-    const novo = await signedBinance('/api/v3/orderList/oco', 'POST', {
-      symbol: pos.simbolo, side: 'SELL', quantity: String(quantidade),
-      listClientOrderId: novoId,
-      aboveType: 'LIMIT_MAKER', abovePrice: String(pos.alvo_pedido), aboveClientOrderId: `${novoId}a`.slice(0, 36),
-      belowType: 'STOP_LOSS_LIMIT', belowStopPrice: String(novoStop), belowPrice: String(novoLimite),
-      belowTimeInForce: 'GTC', belowClientOrderId: `${novoId}s`.slice(0, 36),
-    });
+    if (!nova.ok) throw new Error(nova.erro);
     await atualizarPosicao(pos.ordem_id, {
-      estado: 'ABERTA', stopAtual: novoStop, trailingDegrau: ordem.degrau,
+      estado: 'ABERTA', stopAtual: nova.stop || novoStop, trailingDegrau: ordem.degrau,
       trailingEm: new Date().toISOString(),
       texto: `${ordem.titulo} — ${ordem.texto}`,
     }).catch(() => {});
     await saveAlerts([{
       kind: 'robo', level: 'info', symbol: pos.simbolo,
-      title: `Stop subiu para ${novoStop} em ${pos.simbolo}`,
+      title: `Stop subiu para ${nova.stop || novoStop} em ${pos.simbolo}`,
       message: ordem.texto, fingerprint: `robo-trail-${novoId}`, payload: { ordem, novoStop },
     }]).catch(() => {});
-    return { mexeu: true, novoStop, degrau: ordem.degrau, ordem, resposta: novo };
+    return { mexeu: true, novoStop: nova.stop || novoStop, degrau: ordem.degrau, ordem, resposta: nova.resposta };
   } catch (error) {
     // O pior caso do arquivo inteiro: cancelou e não conseguiu recolocar.
     // Grita alto, deixa marcada como DESPROTEGIDA e tenta de novo no próximo
@@ -733,6 +735,132 @@ async function subirStopsDoDia() {
   return feitos;
 }
 
+/**
+ * Cancela apenas as ordens DESTE trade, uma a uma, pelo nome que demos a elas.
+ *
+ * Todas as pernas de uma posição — as originais (`{id}e`, `{id}a`, `{id}s`) e
+ * as de cada trailing (`{id}t...`) — começam com o mesmo `ordem_id`. É esse
+ * prefixo que separa o que é do robô do que é do Bruno, e é por isso que o id
+ * determinístico continua pagando: aqui ele é a diferença entre cancelar a
+ * própria proteção e apagar a ordem manual de alguém.
+ */
+async function cancelarProtecao(pos) {
+  const abertas = await signedBinance('/api/v3/openOrders', 'GET', { symbol: pos.simbolo }).catch(() => []);
+  const minhas = minhasOrdens(Array.isArray(abertas) ? abertas : [], pos.ordem_id, 'SELL');
+  const feitas = [];
+  for (const o of minhas) {
+    // Cancelar uma perna do OCO derruba a outra junto, então a segunda
+    // chamada costuma responder "não existe" — o que é sucesso, não erro.
+    const r = await signedBinance('/api/v3/order', 'DELETE', { symbol: pos.simbolo, origClientOrderId: o.clientOrderId }).catch(() => null);
+    if (r) feitas.push(o.clientOrderId);
+  }
+  return feitas;
+}
+
+/**
+ * ENTRADAS QUE NÃO PREENCHERAM.
+ *
+ * A entrada é uma ordem limite GTC: sem prazo, ela espera para sempre. Uma
+ * ordem parada não é neutra — ela segura USDT que não pode ser usado em outro
+ * setup, ocupa uma das vagas de posição, e principalmente representa uma ideia
+ * que já venceu. O sinal que justificou aquele preço tinha quinze minutos de
+ * validade, não três dias.
+ *
+ * Preencher tarde é pior do que não preencher: entra num setup que já não
+ * existe, com um stop calculado para um mercado que já mudou.
+ */
+async function expirarEntradasVelhas(minutos = 15) {
+  const abertas = entradasVencidas(await posicoesEmAberto().catch(() => []), minutos);
+  const expiradas = [];
+  for (const pos of abertas) {
+    const r = await signedBinance('/api/v3/order', 'DELETE', { symbol: pos.simbolo, origClientOrderId: `${pos.ordem_id}e` }).catch(() => null);
+    // Se a Binance diz que a ordem não existe, ela preencheu ou já morreu no
+    // meio do caminho. Não marca como cancelada: deixa a conferência decidir
+    // com os dados dela, em vez de escrever um desfecho por dedução.
+    if (!r) continue;
+    await atualizarPosicao(pos.ordem_id, {
+      estado: 'CANCELADA', fechadaEm: new Date().toISOString(),
+      texto: `A entrada esperou ${minutos} minutos e não preencheu. O setup que justificava esse preço já venceu — cancelei em vez de entrar atrasado.`,
+    }).catch(() => {});
+    expiradas.push(pos.simbolo);
+  }
+  return expiradas;
+}
+
+/**
+ * COLOCA A PROTEÇÃO — e é aqui que mora a armadilha mais cara do projeto.
+ *
+ * A quantidade da venda NÃO é a que a gente comprou. É a que a gente TEM.
+ *
+ * Quando a conta não paga taxa em BNB, a Binance cobra a comissão na própria
+ * moeda comprada: você pede 100 ARB, a ordem executa, e ficam 99,9 ARB na
+ * carteira. Uma venda programada para 100 é recusada por saldo insuficiente —
+ * e a posição fica no mercado sem nada segurando, exatamente no caso em que
+ * ninguém está olhando.
+ *
+ * Por isso a proteção é sempre dimensionada pelo saldo real, arredondado para
+ * BAIXO no stepSize. Sobrar poeira é irrelevante; faltar centésimo derruba a
+ * ordem inteira.
+ */
+async function protegerPosicao(pos, { stop, alvo, motivo = 'protecao' }) {
+  const base = pos.simbolo.replace(/USDT$/, '');
+
+  // 1) Ja existe protecao viva? Nao coloca outra. Duas ordens de venda para
+  //    uma compra so fazem a segunda tentar vender o que ja nao existe.
+  const abertas = await signedBinance('/api/v3/openOrders', 'GET', { symbol: pos.simbolo }).catch(() => []);
+  if (minhasOrdens(Array.isArray(abertas) ? abertas : [], pos.ordem_id, 'SELL').length) {
+    return { ok: true, jaTinha: true };
+  }
+
+  // 2) Quanto existe de verdade na carteira
+  const conta = await signedBinance('/api/v3/account').catch(() => null);
+  const saldo = Number((conta?.balances || []).find(b => b.asset === base)?.free) || 0;
+
+  const info = await fetchPublico(`${marketBase()}/api/v3/exchangeInfo?symbol=${pos.simbolo}`).then(r => r.json()).catch(() => null);
+  const filtros = info?.symbols?.[0]?.filters || [];
+  const tick = Number(filtros.find(f => f.filterType === 'PRICE_FILTER')?.tickSize) || 1e-8;
+  const passo = Number(filtros.find(f => f.filterType === 'LOT_SIZE')?.stepSize) || 1e-8;
+  const minimo = Number(filtros.find(f => f.filterType === 'LOT_SIZE')?.minQty) || passo;
+
+  const quantidade = floorStepSpot(Math.min(saldo, Number(pos.quantidade) || saldo), passo);
+  if (!(quantidade >= minimo)) {
+    return { ok: false, erro: `Saldo de ${base} é ${saldo}, abaixo do mínimo negociável. Não dá para proteger o que não dá para vender.` };
+  }
+
+  const stopPreco = roundStepSpot(stop, tick, 'down');
+  const stopLimite = roundStepSpot(stop * 0.997, tick, 'down');
+  const alvoPreco = roundStepSpot(alvo, tick, 'down');
+  const id = `${pos.ordem_id}${motivo === 'trailing' ? 't' : 'r'}${Date.now().toString(36).slice(-5)}`.slice(0, 32);
+
+  const pernas = {
+    symbol: pos.simbolo, side: 'SELL', quantity: String(quantidade),
+    listClientOrderId: id,
+    aboveType: 'LIMIT_MAKER', abovePrice: String(alvoPreco), aboveClientOrderId: `${id}a`,
+    belowType: 'STOP_LOSS_LIMIT', belowStopPrice: String(stopPreco), belowPrice: String(stopLimite),
+    belowTimeInForce: 'GTC', belowClientOrderId: `${id}s`,
+  };
+
+  try {
+    const r = await signedBinance('/api/v3/orderList/oco', 'POST', pernas);
+    return { ok: true, quantidade, stop: stopPreco, alvo: alvoPreco, resposta: r };
+  } catch (error) {
+    // O OCO pode ser recusado por um motivo que NAO impede o stop: o alvo e um
+    // LIMIT_MAKER, e se o preco ja passou dele a Binance recusa a lista
+    // inteira. Perder o alvo custa lucro; perder o stop custa a conta. Entao
+    // se o par nao entra, o stop entra sozinho.
+    try {
+      const so = await signedBinance('/api/v3/order', 'POST', {
+        symbol: pos.simbolo, side: 'SELL', type: 'STOP_LOSS_LIMIT',
+        quantity: String(quantidade), stopPrice: String(stopPreco), price: String(stopLimite),
+        timeInForce: 'GTC', newClientOrderId: `${id}s`,
+      });
+      return { ok: true, somenteStop: true, quantidade, stop: stopPreco, resposta: so, erroDoPar: error.message };
+    } catch (erroDoStop) {
+      return { ok: false, erro: `${error.message} | e o stop sozinho também falhou: ${erroDoStop.message}` };
+    }
+  }
+}
+
 /** Recoloca a proteção de qualquer posição que esteja descoberta — venha de
  *  um trailing que falhou ou de alguém que cancelou o OCO pelo aplicativo. */
 async function reprotegerDesprotegidas() {
@@ -740,22 +868,23 @@ async function reprotegerDesprotegidas() {
   const feitas = [];
   for (const pos of abertas.filter(p => p.estado === 'DESPROTEGIDA' && Number(p.quantidade) > 0)) {
     const stop = Number(pos.stop_atual) || Number(pos.stop_pedido);
-    const info = await fetchPublico(`${marketBase()}/api/v3/exchangeInfo?symbol=${pos.simbolo}`).then(r => r.json()).catch(() => null);
-    const tick = Number((info?.symbols?.[0]?.filters || []).find(f => f.filterType === 'PRICE_FILTER')?.tickSize) || 1e-8;
-    const novoId = `${pos.ordem_id}r${Date.now().toString(36).slice(-4)}`.slice(0, 36);
-    try {
-      await signedBinance('/api/v3/orderList/oco', 'POST', {
-        symbol: pos.simbolo, side: 'SELL', quantity: String(pos.quantidade),
-        listClientOrderId: novoId,
-        aboveType: 'LIMIT_MAKER', abovePrice: String(roundStepSpot(pos.alvo_pedido, tick, 'down')), aboveClientOrderId: `${novoId}a`.slice(0, 36),
-        belowType: 'STOP_LOSS_LIMIT', belowStopPrice: String(roundStepSpot(stop, tick, 'down')),
-        belowPrice: String(roundStepSpot(stop * 0.997, tick, 'down')), belowTimeInForce: 'GTC',
-        belowClientOrderId: `${novoId}s`.slice(0, 36),
-      });
-      await atualizarPosicao(pos.ordem_id, { estado: 'ABERTA', stopAtual: stop, texto: 'Proteção recolocada na Binance.' }).catch(() => {});
-      feitas.push({ simbolo: pos.simbolo, stop });
-    } catch (error) {
-      feitas.push({ simbolo: pos.simbolo, erro: error.message });
+    const r = await protegerPosicao(pos, { stop, alvo: Number(pos.alvo_pedido), motivo: 'reprotecao' });
+    if (r.ok) {
+      await atualizarPosicao(pos.ordem_id, {
+        estado: 'ABERTA', stopAtual: r.stop || stop,
+        texto: r.jaTinha ? 'A proteção já estava lá — alarme falso, nada foi duplicado.'
+          : r.somenteStop ? `Proteção recolocada só com o stop em ${r.stop}. O alvo foi recusado (${r.erroDoPar}) — sem alvo dá para viver, sem stop não.`
+          : 'Proteção recolocada na Binance.',
+      }).catch(() => {});
+      feitas.push({ simbolo: pos.simbolo, ...r });
+    } else {
+      await saveAlerts([{
+        kind: 'robo', level: 'critical', symbol: pos.simbolo,
+        title: `${pos.simbolo} continua SEM STOP`,
+        message: r.erro, fingerprint: `robo-nua-${pos.ordem_id}-${new Date().toISOString().slice(0, 13)}`,
+        payload: { erro: r.erro },
+      }]).catch(() => {});
+      feitas.push({ simbolo: pos.simbolo, erro: r.erro });
     }
   }
   return feitas;
@@ -919,6 +1048,7 @@ async function cicloDoRobo({ forcado = false } = {}) {
     let posicoes = { conferidas: [] }, trailings = [];
     if (cfg.modo !== 'SIMULACAO') {
       posicoes = await conferirPosicoes().catch(error => ({ conferidas: [], erro: error.message }));
+      await expirarEntradasVelhas(cfg.minutosParaEntrar).catch(() => []);
       trailings = await subirStopsDoDia().catch(() => []);
       await reprotegerDesprotegidas().catch(() => []);
     }
@@ -958,8 +1088,38 @@ async function cicloDoRobo({ forcado = false } = {}) {
       }
     }
 
+    // ------------------------------------------------------------
+    // QUEM CONTA COMO POSICAO ABERTA — corrigido em 07/09/2026
+    //
+    // Estava contando TODA moeda da carteira que valesse mais de 5 USDT. Com
+    // uma carteira normal — BTC, ETH e alguns alts — o robo batia no teto de
+    // 3 posicoes no primeiro ciclo e ficava PARADO para sempre, dizendo
+    // POSICOES_CHEIAS. Ele nunca teria comprado nada. Era exatamente o "nao
+    // pega, nao serve".
+    //
+    // Sao duas perguntas diferentes e eu tinha juntado numa so:
+    //
+    //   quantas posicoes EU abri?      → so as minhas contam para o teto
+    //   em que pares eu nao mexo?      → as minhas MAIS o que o Bruno ja tem
+    //
+    // A segunda inclui a carteira dele de proposito: comprar uma moeda que
+    // ele ja guarda mistura o estoque dele com o meu, e o dia em que ele
+    // vender na mao o meu stop fica sem saldo para executar.
+    //
+    // E as minhas incluem as AGUARDANDO. Sem isso, uma entrada que ainda nao
+    // preencheu era invisivel — a moeda nao esta na carteira — e o ciclo
+    // seguinte comprava o MESMO par de novo, dobrando a posicao em silencio.
+    // ------------------------------------------------------------
+    const minhasPosicoes = cfg.modo === 'SIMULACAO' ? [] : await posicoesEmAberto().catch(() => []);
+    const contagem = cfg.modo === 'SIMULACAO'
+      ? { posicoesAbertas: conta.posicoesAbertas, paresAbertos: conta.paresAbertos, naCarteira: conta.posicoesAbertas }
+      : contarPosicoes({ minhas: minhasPosicoes, carteira: conta.abertos || [] });
+
     const estado = {
       ...conta,
+      posicoesAbertas: contagem.posicoesAbertas,
+      paresAbertos: contagem.paresAbertos,
+      naCarteira: contagem.naCarteira,
       desligadoManualmente: !salvo.ligado && !forcado,
       killSwitch: salvo.killSwitch,
       atrasoDadosMs: Date.now() - new Date(scan.generatedAt).getTime(),

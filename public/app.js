@@ -599,5 +599,77 @@ let relogioRobo = null;
 document.querySelector('[data-view="robo"]')?.addEventListener('click', () => {
   carregarRobo(); carregarHistoricoRobo();
   if (relogioRobo) clearInterval(relogioRobo);
-  relogioRobo = setInterval(carregarRobo, 15000);
+  relogioRobo = setInterval(() => { carregarRobo(); carregarPosicoesRobo(); }, 15000);
 });
+
+// ---- POSIÇÕES, RESULTADO E SAÚDE DO ROBÔ ----
+// Três números que o painel antigo não tinha e sem os quais não dá para
+// confiar no robô: quanto ele fez hoje, se as posições estão protegidas, e
+// se ele está perto de levar bloqueio da Binance.
+
+const ROBO_ESTADOS = {
+  AGUARDANDO: { rotulo: 'Na fila', cor: 'espera' },
+  ABERTA: { rotulo: 'Comprada', cor: 'ok' },
+  DESPROTEGIDA: { rotulo: 'SEM STOP', cor: 'perigo' },
+  FECHADA: { rotulo: 'Fechada', cor: 'neutro' },
+  CANCELADA: { rotulo: 'Não houve', cor: 'neutro' },
+};
+
+function pintarPosicoesRobo(dados) {
+  const linhas = dados?.posicoes || [];
+  $('#roboPosicoesVazio').classList.toggle('hidden', linhas.length > 0);
+  $('#roboPosicoes').innerHTML = linhas.map(p => {
+    const e = ROBO_ESTADOS[p.estado] || { rotulo: p.estado, cor: 'neutro' };
+    const r = p.resultado_usdt;
+    return `<tr class="robo-${e.cor}">
+      <td><b>${esc(p.simbolo)}</b></td>
+      <td><span class="robo-etiqueta robo-${e.cor}">${esc(e.rotulo)}</span></td>
+      <td>${p.preco_entrada ? number(p.preco_entrada, 6) : '—'}</td>
+      <td>${p.stop_atual ? number(p.stop_atual, 6) : '—'}${p.trailing_degrau ? ` <small>(${esc(p.trailing_degrau)})</small>` : ''}</td>
+      <td>${p.saida_tipo || '—'}</td>
+      <td class="${r > 0 ? 'positive' : r < 0 ? 'negative' : ''}">${r === null || r === undefined ? '—' : `${number(r, 2)} USDT`}${p.taxas_incertas ? ' <small title="Comissão em moeda não convertida">≈</small>' : ''}</td>
+      <td class="robo-explica">${esc(p.texto || '')}</td>
+    </tr>`;
+  }).join('');
+
+  const hoje = dados?.hoje;
+  if (hoje) {
+    $('#roboHoje').textContent = `${number(hoje.liquido, 2)} USDT`;
+    $('#roboHoje').className = hoje.liquido > 0 ? 'positive' : hoje.liquido < 0 ? 'negative' : '';
+    $('#roboHojeHint').textContent = `${hoje.trades} fechado(s) · perdeu ${number(hoje.perda, 2)}`;
+  }
+  const abertas = linhas.filter(p => p.estado === 'ABERTA').length;
+  const semStop = linhas.filter(p => p.estado === 'DESPROTEGIDA').length;
+  $('#roboAbertas').textContent = String(abertas + semStop);
+  $('#roboAbertasHint').textContent = semStop
+    ? `${semStop} SEM STOP — exige ação agora`
+    : abertas ? 'Todas com stop na Binance' : 'Nenhuma posição aberta';
+  $('#roboAbertasHint').className = semStop ? 'negative' : '';
+
+  const l = dados?.limites;
+  if (l) {
+    $('#roboPeso').textContent = `${l.pesoPct}%`;
+    $('#roboPesoHint').textContent = l.pausado ? l.motivo : `${l.pesoUsado} de ${l.teto} por minuto`;
+    $('#roboPeso').className = l.pausado ? 'negative' : l.pesoPct > 50 ? '' : 'positive';
+  }
+  const st = dados?.stream;
+  if (st) {
+    $('#roboStream').textContent = st.conectado ? 'Ao vivo' : st.disponivel ? 'Desligado' : 'Indisponível';
+    $('#roboStreamHint').textContent = st.conectado ? 'Sabe do fill no instante' : st.nota;
+  }
+}
+
+async function carregarPosicoesRobo() {
+  const d = await fetch('/api/robo/posicoes?limit=50').then(r => r.json()).catch(() => null);
+  pintarPosicoesRobo(d);
+}
+
+$('#roboConferir')?.addEventListener('click', async () => {
+  const b = $('#roboConferir');
+  b.disabled = true; b.textContent = 'Conferindo…';
+  await fetch('/api/robo/conferir', { method: 'POST' }).catch(() => {});
+  b.disabled = false; b.textContent = 'Conferir na Binance';
+  carregarPosicoesRobo();
+});
+
+document.querySelector('[data-view="robo"]')?.addEventListener('click', carregarPosicoesRobo);

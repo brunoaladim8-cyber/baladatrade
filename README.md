@@ -35,6 +35,80 @@ corretora.
 Robô que guarda o stop na própria memória morre no meio da posição e deixa o
 dinheiro exposto. É assim que se perde uma conta dormindo.
 
+### Depois da ordem: o ciclo se fecha
+
+O robô não manda e esquece. A cada ciclo — e no instante do preenchimento,
+quando o WebSocket está de pé — ele lê as três pernas do OTOCO na Binance e
+conclui o que houve.
+
+| Estado | O que significa |
+|---|---|
+| `AGUARDANDO` | A entrada está na fila e não preencheu |
+| `ABERTA` | Comprada, com stop e alvo ativos na Binance |
+| `DESPROTEGIDA` | **Comprada e sem nada segurando.** Alguém cancelou o OCO, ou um trailing falhou no meio. Alerta crítico e recolocação automática |
+| `FECHADA` | Saiu no alvo ou no stop, com resultado líquido de taxas |
+| `CANCELADA` | A entrada morreu sem preencher — não é prejuízo, é trade que não houve |
+
+O resultado sai do quote realmente executado, não do preço pedido, e desconta
+as comissões reais. Comissão paga em moeda que não dá para converter aqui
+(BNB, por exemplo) é marcada como incerta em vez de estimada — custo chutado
+por cima vira lucro que não existe.
+
+É daqui que sai o número da trava de perda diária. Antes disso ela comparava
+com zero e nunca disparava.
+
+### Trailing: o guardião passa a mandar
+
+O `guardiao-do-lucro.js` já sabia dizer "suba o stop para X". Era texto na tela
+esperando alguém obedecer. Agora o robô obedece: passou de 1R, o stop vai para
+a entrada; passou de 2R, trava 1R; de 3R em diante, trava metade do caminho
+andado. O stop nunca desce.
+
+**A janela descoberta, dita com todas as letras:** a Binance não tem
+cancelar-e-recolocar atômico para lista OCO. Para subir o stop é preciso
+cancelar o OCO e criar outro, e entre uma coisa e outra existem alguns segundos
+sem proteção. Isso não dá para eliminar. Dá para reduzir, e é o que o código
+faz: só mexe depois de 1R (então acontece poucas vezes), marca a posição como
+`DESPROTEGIDA` durante a troca, e se a recolocação falhar dispara alerta
+crítico e tenta de novo no ciclo seguinte.
+
+A alternativa — nunca subir o stop — tem o custo conhecido de devolver o lucro
+inteiro.
+
+### Limite de peso da Binance
+
+Toda resposta da Binance diz quanto peso você já gastou no minuto
+(`x-mbx-used-weight-1m`). O robô lê esse número e **para em 70% do teto**,
+antes de levar o 429. Depois de um 429 ele respeita o `Retry-After` em vez de
+insistir — insistir é o que transforma 429 em 418, que é banimento de IP e vai
+de 2 minutos a 3 dias.
+
+O contador é um só para o processo inteiro, porque o limite é por IP: robô,
+radar e gráficos gastam do mesmo bolso.
+
+### WebSocket: saber na hora
+
+O ciclo roda a cada 60 segundos, então o robô descobria o preenchimento até um
+minuto depois — justo o minuto em que o preço mais anda. Com o `user data
+stream` ele sabe no instante, e reconhece o evento como seu pelo
+`clientOrderId` que ele mesmo deu.
+
+**O polling não sai de cena.** WebSocket cai, `listenKey` expira, rede oscila.
+O stream é o caminho rápido; o ciclo continua sendo a rede de segurança.
+Requer Node 22+ (WebSocket global); sem ele o robô funciona igual, só descobre
+o preenchimento no ciclo seguinte.
+
+### Reconciliação no boot
+
+Ao subir, a **corretora é a fonte da verdade** e o banco se ajusta a ela. Sem
+isso o robô voltava acreditando numa realidade que podia ter mudado enquanto
+ele estava fora: ordem cancelada pelo aplicativo, posição que fechou, ou um
+trailing interrompido no meio.
+
+Ordens abertas que ele não reconhece são **reportadas, nunca canceladas** —
+podem ser suas, colocadas na mão. Robô que apaga ordem de gente é pior do que
+robô que não sabe de nada.
+
 ### O que ele não faz
 
 - Não opera alavancado, margem, futuros nem short.
@@ -81,6 +155,9 @@ ordens abertas na Binance. Só um humano solta depois, em
 | `POST /api/robo/desligar` | Desliga |
 | `POST /api/robo/panico` | Para tudo e cancela ordens |
 | `POST /api/robo/soltar-panico` | Solta o kill switch |
+| `GET /api/robo/posicoes` | Posições, resultado do dia, peso e stream |
+| `POST /api/robo/conferir` | Confere as posições na Binance agora |
+| `POST /api/robo/reconciliar` | Reconciliação completa contra a corretora |
 
 ## Outros recursos
 
@@ -105,6 +182,8 @@ DATABASE_URL=postgres://...
 APP_PASSWORD=uma-senha-longa
 AUTH_SECRET=outro-segredo-longo
 
+BINANCE_PESO_MAX=6000        # teto de peso por minuto; ele para em 70%
+
 BINANCE_API_KEY=...
 BINANCE_API_SECRET=...
 BINANCE_BASE_URL=https://testnet.binance.vision
@@ -123,7 +202,7 @@ Crie a chave da Binance **sem permissão de saque** e com restrição de IP.
 ## Executar
 
 ```bash
-npm start   # http://localhost:3000
+npm start   # http://localhost:3000 — requer Node 22+
 npm test
 ```
 

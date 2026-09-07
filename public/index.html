@@ -101,6 +101,17 @@
           <p class="muted">Para ligar em modo <b>Real</b> o servidor precisa de <code>ENABLE_LIVE_TRADING=true</code> e <code>ROBO_PERMITE_REAL=true</code>. Sem as duas, o robô cai sozinho para Testnet.</p>
         </article>
       </div>
+      <div class="metrics">
+        <article><small>RESULTADO DE HOJE</small><strong id="roboHoje">—</strong><span id="roboHojeHint">Só conta o que fechou</span></article>
+        <article><small>POSIÇÕES ABERTAS</small><strong id="roboAbertas">—</strong><span id="roboAbertasHint">Com stop na Binance</span></article>
+        <article><small>PESO NA BINANCE</small><strong id="roboPeso">—</strong><span id="roboPesoHint">Limite por minuto</span></article>
+        <article><small>STREAM</small><strong id="roboStream">—</strong><span id="roboStreamHint">Avisa no instante do fill</span></article>
+      </div>
+      <article class="panel table-wrap">
+        <div class="panel-head"><div><small>POSIÇÕES</small><h3>O que aconteceu com cada ordem</h3></div><button class="link" id="roboConferir">Conferir na Binance</button></div>
+        <table><thead><tr><th>Par</th><th>Estado</th><th>Entrada</th><th>Stop atual</th><th>Saída</th><th>Resultado</th><th>O que houve</th></tr></thead><tbody id="roboPosicoes"></tbody></table>
+        <div id="roboPosicoesVazio" class="empty">Nenhuma posição registrada ainda.</div>
+      </article>
       <article class="panel table-wrap">
         <div class="panel-head"><div><small>HISTÓRICO</small><h3>Toda decisão, inclusive as de não operar</h3></div><button class="link" id="roboHistorico">Atualizar</button></div>
         <table><thead><tr><th>Quando</th><th>Ação</th><th>Par</th><th>Motivo</th><th>Modo</th><th>Enviada?</th><th>Explicação</th></tr></thead><tbody id="roboTabela"></tbody></table>

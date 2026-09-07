@@ -4,11 +4,13 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const {PROP_PROFILES,ACCOUNT_RULES,TPT_RULES,LUCID_RULES,riskState,detectSetup,backtest}=require('./mnq-engine');
-const {ordensDaMesa,resumoDoGuardiao}=require('./guardiao-do-lucro');
 const {simularOrdem,margemParaRisco}=require('./calculadora-de-ordem');
-const {calculateSpotPlan}=require('./spot-engine');
+const {calculateSpotPlan,roundStep:roundStepSpot}=require('./spot-engine');
+const {criarLimites}=require('./limites');
+const {lerPosicao,perdaDoDia}=require('./resultado');
+const {ordensDaMesa,resumoDoGuardiao,ordemDoGuardiao}=require('./guardiao-do-lucro');
 const {normalizarConfig,escolherCandidato,precosDoTrade,decidir:decidirRobo,CONFIG_PADRAO}=require('./robo');
-const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo}=require('./db');
+const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -133,12 +135,32 @@ async function posicoesAlavancadas() {
     });
 }
 
+// O limitador e um so para o processo inteiro: o teto de peso da Binance e por
+// IP, entao o robo, o radar e os graficos gastam do mesmo bolso. Ter um
+// contador por modulo seria o mesmo que nao ter contador.
+const limites = criarLimites({teto: Number(process.env.BINANCE_PESO_MAX || 6000)});
+
+/** Chamada publica com o peso contabilizado. Nao assina nada, mas gasta do
+ *  mesmo limite — e o scanner faz cinquenta destas por ciclo. */
+async function fetchPublico(url, opcoes={}) {
+  const permissao = limites.podeChamar();
+  if (!permissao.pode) throw new Error(`Binance em espera: ${permissao.motivo}`);
+  const response = await fetch(url, {signal: AbortSignal.timeout(10000), ...opcoes});
+  limites.registrar(response.status, response.headers);
+  return response;
+}
+
 async function signedBinance(endpoint, method='GET', params={}) {
   const cfg = binanceConfig();
   if (!cfg.key || !cfg.secret) throw new Error('Binance ainda não configurada no servidor.');
+  // Parar aqui e o que evita o 418. Depois de um 429, insistir nao acelera
+  // nada: aumenta o banimento, que comeca em minutos e chega a dias.
+  const permissao = limites.podeChamar();
+  if (!permissao.pode) throw new Error(`Binance em espera: ${permissao.motivo}`);
   const query = new URLSearchParams({...params, recvWindow:'5000', timestamp:String(Date.now())});
   query.set('signature', crypto.createHmac('sha256', cfg.secret).update(query.toString()).digest('hex'));
   const response = await fetch(`${cfg.base}${endpoint}?${query}`, {method, headers:{'X-MBX-APIKEY':cfg.key}});
+  limites.registrar(response.status, response.headers);
   const data = await response.json();
   if (!response.ok) throw new Error(data.msg || `Binance respondeu ${response.status}`);
   return data;
@@ -253,8 +275,8 @@ function marketBase(){return 'https://api.binance.com'}
 function normalizeMarketSymbol(value){const clean=String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');if(!clean)return'BTCUSDT';const quote=clean.match(/(USDT|USDC|FDUSD|TUSD|BTC|ETH|BNB|BRL)$/)?.[1];return quote&&clean.length>quote.length?clean:`${clean}USDT`}
 async function marketRadar(limit=50){
   const [response,exchangeResponse,isolatedResult]=await Promise.all([
-    fetch(`${marketBase()}/api/v3/ticker/24hr`),
-    fetch(`${marketBase()}/api/v3/exchangeInfo`),
+    fetchPublico(`${marketBase()}/api/v3/ticker/24hr`),
+    fetchPublico(`${marketBase()}/api/v3/exchangeInfo`),
     signedBinance('/sapi/v1/margin/isolated/allPairs').catch(()=>[])
   ]);
   if(!response.ok)throw new Error('Radar de mercado indisponível.');
@@ -299,7 +321,7 @@ async function publicPrice(symbol){
     if(!last?.close)throw new Error('Cotação pública do MNQ indisponível no momento.');
     return last.close;
   }
-  const response=await fetch(`${marketBase()}/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`),data=await response.json();
+  const response=await fetchPublico(`${marketBase()}/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`),data=await response.json();
   if(!response.ok||!Number(data.price))throw new Error(data.msg||'Par não encontrado na Binance.');
   return Number(data.price);
 }
@@ -320,7 +342,7 @@ async function syncBinancePay(){
 }
 
 async function marginMonitor(){
-  const [account,tickers]=await Promise.all([signedBinance('/sapi/v1/margin/account'),fetch(`${marketBase()}/api/v3/ticker/price`).then(r=>r.json())]),prices=new Map(tickers.map(x=>[x.symbol,Number(x.price)])),stable=new Set(['USDT','USDC','FDUSD','TUSD']);
+  const [account,tickers]=await Promise.all([signedBinance('/sapi/v1/margin/account'),fetchPublico(`${marketBase()}/api/v3/ticker/price`).then(r=>r.json())]),prices=new Map(tickers.map(x=>[x.symbol,Number(x.price)])),stable=new Set(['USDT','USDC','FDUSD','TUSD']);
   const positions=(account.userAssets||[]).map(row=>{const price=stable.has(row.asset)?1:prices.get(`${row.asset}USDT`)||0,free=Number(row.free),locked=Number(row.locked),borrowed=Number(row.borrowed),interest=Number(row.interest),net=Number(row.netAsset),debt=borrowed+interest;return {asset:row.asset,free,locked,borrowed,interest,net,price,netUsdt:net*price,debtUsdt:debt*price,direction:net<0?'SHORT':debt>0||net>0?'LONG':'FLAT'}}).filter(x=>Math.abs(x.netUsdt)>=.01||x.debtUsdt>=.01).sort((a,b)=>b.debtUsdt-a.debtUsdt||Math.abs(b.netUsdt)-Math.abs(a.netUsdt));
   const level=Number(account.marginLevel||0),alerts=[];if(level&&level<1.5)alerts.push({kind:'margin',level:'danger',title:'Nível de margem crítico',message:`Nível ${level.toFixed(2)}. Reduza dívida antes de nova operação.`,fingerprint:`margin-critical-${new Date().toISOString().slice(0,13)}`,payload:{level}});for(const p of positions.filter(x=>x.interest>0))alerts.push({kind:'interest',level:'warning',symbol:p.asset,title:`Juros em ${p.asset}`,message:`${p.interest} ${p.asset} acumulados.`,fingerprint:`interest-${p.asset}-${new Date().toISOString().slice(0,10)}`,payload:p});await saveAlerts(alerts);
   return {level,totalAssetUsdt:Number(account.totalAssetOfBtc||0)*(prices.get('BTCUSDT')||0),totalDebtUsdt:Number(account.totalLiabilityOfBtc||0)*(prices.get('BTCUSDT')||0),netUsdt:Number(account.totalNetAssetOfBtc||0)*(prices.get('BTCUSDT')||0),positions,alerts,updatedAt:new Date().toISOString()};
@@ -412,7 +434,7 @@ async function monitorPositions(){
 function ema(values,period){if(!values.length)return 0;const k=2/(period+1);return values.slice(1).reduce((value,item)=>item*k+value*(1-k),values[0])}
 function atr(candles,period=14){const ranges=candles.map((c,i)=>Math.max(c.high-c.low,i?Math.abs(c.high-candles[i-1].close):0,i?Math.abs(c.low-candles[i-1].close):0));const sample=ranges.slice(-period);return sample.length?sample.reduce((a,b)=>a+b,0)/sample.length:0}
 function rsi(values,period=14){if(values.length<2)return 50;const changes=values.slice(1).map((v,i)=>v-values[i]).slice(-period),gain=changes.reduce((s,v)=>s+Math.max(v,0),0)/changes.length,loss=changes.reduce((s,v)=>s+Math.max(-v,0),0)/changes.length;return loss?100-(100/(1+gain/loss)):100}
-async function publicKlines(symbol,interval,limit=120){const response=await fetch(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),data=await response.json();if(!response.ok)throw new Error(data.msg||'Candles indisponíveis.');return data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5]),quoteVolume:Number(row[7])}))}
+async function publicKlines(symbol,interval,limit=120){const response=await fetchPublico(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),data=await response.json();if(!response.ok)throw new Error(data.msg||'Candles indisponíveis.');return data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5]),quoteVolume:Number(row[7])}))}
 
 async function mnqCandles(){
   const end=Math.floor(Date.now()/1000),start=end-59*24*60*60,url=`https://query1.finance.yahoo.com/v8/finance/chart/MNQ=F?period1=${start}&period2=${end}&interval=15m&includePrePost=true`;
@@ -474,6 +496,291 @@ function portfolioAlerts(summary){
   }
   if(Math.abs(summary.changePct)>=3)alerts.push({level:summary.changePct<0?'danger':'info',asset:'CARTEIRA',message:`A carteira variou ${summary.changePct.toFixed(2)}% em 24h.`});
   return alerts;
+}
+
+// ============================================================
+// O QUE ACONTECEU DEPOIS DA ORDEM — 07/09/2026
+//
+// Até aqui o robô mandava e nunca mais olhava. Isso deixava três coisas de
+// enfeite: a trava de perda do dia (sem número para comparar), o guardião
+// (sem saber se a entrada preencheu) e o histórico (dizia o que ele TENTOU).
+//
+// Este bloco fecha o ciclo. Ele lê as três pernas do OTOCO na Binance,
+// conclui o que houve (resultado.js decide, sem rede) e grava.
+// ============================================================
+
+/** As três pernas de um trade, perguntadas pelo nome que demos a cada uma.
+ *  É por isso que o id determinístico existe: sem ele não há como perguntar
+ *  "o que aconteceu com aquela ordem" depois de um timeout ou um reinício. */
+async function pernasDoTrade(simbolo, ordemId) {
+  const nomes = [['entrada', 'e'], ['alvo', 'a'], ['stop', 's']];
+  const pernas = {};
+  for (const [nome, sufixo] of nomes) {
+    // -2013 ("Order does not exist") é resposta legítima: as pernas pendentes
+    // do OTOCO só nascem quando a entrada preenche. Tratar como erro faria o
+    // robô achar que perdeu a posição toda vez que ela ainda está na fila.
+    pernas[nome] = await signedBinance('/api/v3/order', 'GET', { symbol: simbolo, origClientOrderId: `${ordemId}${sufixo}` }).catch(() => null);
+  }
+  return pernas;
+}
+
+/** As comissões de uma ordem específica. Só vale a pena perguntar quando a
+ *  perna executou — myTrades custa peso e não muda depois de fechada. */
+async function fillsDaOrdem(simbolo, orderId, baseAsset) {
+  if (!orderId) return [];
+  const trades = await signedBinance('/api/v3/myTrades', 'GET', { symbol: simbolo, orderId: String(orderId) }).catch(() => []);
+  return (Array.isArray(trades) ? trades : []).map(t => ({
+    ...t,
+    // Quando a comissão sai na própria moeda comprada, ela reduz a quantidade;
+    // converter pelo preço do fill é exato, não estimativa.
+    commissionEmBase: String(t.commissionAsset || '').toUpperCase() === String(baseAsset || '').toUpperCase(),
+  }));
+}
+
+/**
+ * Confere TODAS as posições que ainda podem mudar e grava o desfecho.
+ *
+ * Devolve também o que exige ação humana — posição desprotegida é a única
+ * coisa aqui que não pode esperar o próximo ciclo.
+ */
+async function conferirPosicoes() {
+  const abertas = await posicoesEmAberto().catch(() => []);
+  const conferidas = [], alertas = [];
+
+  for (const pos of abertas) {
+    const base = pos.simbolo.replace(/USDT$/, '');
+    const pernas = await pernasDoTrade(pos.simbolo, pos.ordem_id).catch(() => null);
+    if (!pernas) continue;
+
+    // Só busca comissão quando alguma perna de saída executou: é o único
+    // momento em que o número muda, e myTrades custa peso.
+    const saiu = [pernas.alvo, pernas.stop].find(p => Number(p?.executedQty) > 0);
+    const leitura = lerPosicao({
+      entrada: pernas.entrada, alvo: pernas.alvo, stop: pernas.stop,
+      fillsEntrada: Number(pernas.entrada?.executedQty) > 0 ? await fillsDaOrdem(pos.simbolo, pernas.entrada.orderId, base) : [],
+      fillsSaida: saiu ? await fillsDaOrdem(pos.simbolo, saiu.orderId, base) : [],
+    });
+
+    const campos = { estado: leitura.estado, texto: leitura.texto };
+    if (leitura.quantidade !== undefined) campos.quantidade = leitura.quantidade;
+    if (leitura.precoEntrada) campos.precoEntrada = leitura.precoEntrada;
+    if (leitura.custo !== undefined) campos.custo = leitura.custo;
+    if (leitura.taxas !== undefined) campos.taxas = leitura.taxas;
+    if (leitura.taxasIncertas !== undefined) campos.taxasIncertas = leitura.taxasIncertas;
+
+    // A posição passa a existir de verdade no instante do preenchimento. É
+    // daqui que o guardião passa a ter direito de opinar sobre o stop.
+    if ((leitura.estado === 'ABERTA' || leitura.estado === 'DESPROTEGIDA') && !pos.preco_entrada) {
+      campos.abertaEm = new Date().toISOString();
+    }
+
+    if (leitura.estado === 'FECHADA') {
+      campos.precoSaida = leitura.precoSaida;
+      campos.saidaTipo = leitura.saidaTipo;
+      campos.recebido = leitura.recebido;
+      campos.resultadoLiquido = leitura.resultadoLiquido;
+      campos.fechadaEm = new Date().toISOString();
+      alertas.push({
+        kind: 'robo', level: leitura.resultadoLiquido >= 0 ? 'info' : 'warning', symbol: pos.simbolo,
+        title: `${pos.simbolo} fechou no ${leitura.saidaTipo === 'ALVO' ? 'alvo' : 'stop'}`,
+        message: leitura.texto, fingerprint: `robo-fim-${pos.ordem_id}`, payload: { leitura },
+      });
+    }
+
+    if (leitura.estado === 'DESPROTEGIDA') {
+      alertas.push({
+        kind: 'robo', level: 'critical', symbol: pos.simbolo,
+        title: `${pos.simbolo} está SEM STOP na Binance`,
+        message: leitura.texto,
+        fingerprint: `robo-desprotegida-${pos.ordem_id}-${new Date().toISOString().slice(0, 13)}`,
+        payload: { leitura },
+      });
+    }
+
+    await atualizarPosicao(pos.ordem_id, campos).catch(() => {});
+    conferidas.push({ ordemId: pos.ordem_id, simbolo: pos.simbolo, ...leitura });
+  }
+
+  if (alertas.length) await saveAlerts(alertas).catch(() => {});
+  return { conferidas, alertas, em: new Date().toISOString() };
+}
+
+// ============================================================
+// TRAILING — o guardião passa a mandar de verdade
+//
+// O guardiao-do-lucro já sabia dizer "suba o stop para X". Até hoje isso era
+// texto na tela esperando alguém obedecer. Agora o robô obedece sozinho.
+//
+// ------------------------------------------------------------
+// A JANELA DESCOBERTA, dita com todas as letras
+// ------------------------------------------------------------
+//
+// A Binance não tem "cancelar e recolocar" atômico para lista OCO. Para subir
+// o stop é preciso CANCELAR o OCO e criar outro — e entre uma coisa e outra
+// existem alguns segundos em que a posição fica sem proteção.
+//
+// Isso é um risco real e não dá para eliminá-lo. Dá para reduzi-lo:
+//
+//   · só mexe quando o trade já passou de 1R, então acontece poucas vezes;
+//   · se a recolocação falhar, grita CRÍTICO e tenta de novo no ciclo seguinte;
+//   · a posição fica marcada como DESPROTEGIDA até o novo OCO existir.
+//
+// A alternativa — nunca subir o stop — tem o custo conhecido de devolver o
+// lucro inteiro. Entre alguns segundos descoberto e devolver o movimento, a
+// escolha é essa, feita de olhos abertos.
+// ============================================================
+
+async function trailingDoGuardiao(pos, precoAtual) {
+  if (pos.estado !== 'ABERTA' || !(Number(pos.preco_entrada) > 0)) return null;
+
+  const pico = Math.max(Number(pos.pico_preco) || 0, precoAtual);
+  if (pico > (Number(pos.pico_preco) || 0)) await atualizarPosicao(pos.ordem_id, { picoPreco: pico }).catch(() => {});
+
+  const ordem = ordemDoGuardiao({
+    simbolo: pos.simbolo,
+    entrada: Number(pos.preco_entrada),
+    stopInicial: Number(pos.stop_pedido),
+    stopAtual: Number(pos.stop_atual) || Number(pos.stop_pedido),
+    preco: precoAtual, pico, direcao: 'LONG',
+    quantidade: Number(pos.quantidade) || Number(pos.quantidade_pedida),
+  });
+
+  if (ordem.acao !== 'SUBIR_STOP' || !(ordem.preco > 0)) return { mexeu: false, ordem };
+
+  // Os filtros só são buscados quando o stop VAI mesmo mudar. Buscar a cada
+  // ciclo, para quase sempre concluir que não há nada a fazer, é peso jogado
+  // fora — e peso é o que leva ao 418.
+  const info = await fetchPublico(`${marketBase()}/api/v3/exchangeInfo?symbol=${pos.simbolo}`).then(r => r.json()).catch(() => null);
+  const tick = Number((info?.symbols?.[0]?.filters || []).find(f => f.filterType === 'PRICE_FILTER')?.tickSize) || 1e-8;
+  const novoStop = roundStepSpot(ordem.preco, tick, 'down');
+  const novoLimite = roundStepSpot(novoStop * 0.997, tick, 'down');
+  // Nunca abaixa o stop. Esta linha é a regra inteira do guardião em código:
+  // proteção conquistada não se devolve.
+  if (!(novoStop > (Number(pos.stop_atual) || Number(pos.stop_pedido)))) return { mexeu: false, ordem };
+
+  const quantidade = Number(pos.quantidade) || Number(pos.quantidade_pedida);
+  const geracao = `t${Date.now().toString(36).slice(-5)}`;
+  const novoId = `${pos.ordem_id}${geracao}`.slice(0, 36);
+
+  // 1) cancela o OCO atual — a janela descoberta começa aqui
+  await signedBinance('/api/v3/openOrders', 'DELETE', { symbol: pos.simbolo });
+  await atualizarPosicao(pos.ordem_id, { estado: 'DESPROTEGIDA', texto: 'Trocando o stop de lugar. A posição fica descoberta por alguns segundos.' }).catch(() => {});
+
+  // 2) recoloca com o stop mais alto — e fecha a janela
+  try {
+    const novo = await signedBinance('/api/v3/orderList/oco', 'POST', {
+      symbol: pos.simbolo, side: 'SELL', quantity: String(quantidade),
+      listClientOrderId: novoId,
+      aboveType: 'LIMIT_MAKER', abovePrice: String(pos.alvo_pedido), aboveClientOrderId: `${novoId}a`.slice(0, 36),
+      belowType: 'STOP_LOSS_LIMIT', belowStopPrice: String(novoStop), belowPrice: String(novoLimite),
+      belowTimeInForce: 'GTC', belowClientOrderId: `${novoId}s`.slice(0, 36),
+    });
+    await atualizarPosicao(pos.ordem_id, {
+      estado: 'ABERTA', stopAtual: novoStop, trailingDegrau: ordem.degrau,
+      trailingEm: new Date().toISOString(),
+      texto: `${ordem.titulo} — ${ordem.texto}`,
+    }).catch(() => {});
+    await saveAlerts([{
+      kind: 'robo', level: 'info', symbol: pos.simbolo,
+      title: `Stop subiu para ${novoStop} em ${pos.simbolo}`,
+      message: ordem.texto, fingerprint: `robo-trail-${novoId}`, payload: { ordem, novoStop },
+    }]).catch(() => {});
+    return { mexeu: true, novoStop, degrau: ordem.degrau, ordem, resposta: novo };
+  } catch (error) {
+    // O pior caso do arquivo inteiro: cancelou e não conseguiu recolocar.
+    // Grita alto, deixa marcada como DESPROTEGIDA e tenta de novo no próximo
+    // ciclo. Silêncio aqui seria a posição ficar sem stop sem ninguém saber.
+    await saveAlerts([{
+      kind: 'robo', level: 'critical', symbol: pos.simbolo,
+      title: `${pos.simbolo} FICOU SEM STOP ao subir a proteção`,
+      message: `O OCO antigo foi cancelado e o novo falhou: ${error.message}. A posição está descoberta e o robô vai tentar recolocar no próximo ciclo.`,
+      fingerprint: `robo-trail-falhou-${novoId}`, payload: { erro: error.message },
+    }]).catch(() => {});
+    return { mexeu: false, falhou: true, erro: error.message, ordem };
+  }
+}
+
+/** Passa o guardião em cada posição comprada e sobe o stop onde ele mandar.
+ *  Uma consulta de preço por posição — e só quem já passou de 1R chega a
+ *  mexer em ordem. */
+async function subirStopsDoDia() {
+  const abertas = (await posicoesEmAberto().catch(() => [])).filter(p => p.estado === 'ABERTA' && Number(p.preco_entrada) > 0);
+  const feitos = [];
+  for (const pos of abertas) {
+    const preco = await publicPrice(pos.simbolo).catch(() => null);
+    if (!preco) continue;
+    const r = await trailingDoGuardiao(pos, preco).catch(error => ({ mexeu: false, falhou: true, erro: error.message }));
+    if (r) feitos.push({ simbolo: pos.simbolo, ...r });
+  }
+  return feitos;
+}
+
+/** Recoloca a proteção de qualquer posição que esteja descoberta — venha de
+ *  um trailing que falhou ou de alguém que cancelou o OCO pelo aplicativo. */
+async function reprotegerDesprotegidas() {
+  const abertas = await posicoesEmAberto().catch(() => []);
+  const feitas = [];
+  for (const pos of abertas.filter(p => p.estado === 'DESPROTEGIDA' && Number(p.quantidade) > 0)) {
+    const stop = Number(pos.stop_atual) || Number(pos.stop_pedido);
+    const info = await fetchPublico(`${marketBase()}/api/v3/exchangeInfo?symbol=${pos.simbolo}`).then(r => r.json()).catch(() => null);
+    const tick = Number((info?.symbols?.[0]?.filters || []).find(f => f.filterType === 'PRICE_FILTER')?.tickSize) || 1e-8;
+    const novoId = `${pos.ordem_id}r${Date.now().toString(36).slice(-4)}`.slice(0, 36);
+    try {
+      await signedBinance('/api/v3/orderList/oco', 'POST', {
+        symbol: pos.simbolo, side: 'SELL', quantity: String(pos.quantidade),
+        listClientOrderId: novoId,
+        aboveType: 'LIMIT_MAKER', abovePrice: String(roundStepSpot(pos.alvo_pedido, tick, 'down')), aboveClientOrderId: `${novoId}a`.slice(0, 36),
+        belowType: 'STOP_LOSS_LIMIT', belowStopPrice: String(roundStepSpot(stop, tick, 'down')),
+        belowPrice: String(roundStepSpot(stop * 0.997, tick, 'down')), belowTimeInForce: 'GTC',
+        belowClientOrderId: `${novoId}s`.slice(0, 36),
+      });
+      await atualizarPosicao(pos.ordem_id, { estado: 'ABERTA', stopAtual: stop, texto: 'Proteção recolocada na Binance.' }).catch(() => {});
+      feitas.push({ simbolo: pos.simbolo, stop });
+    } catch (error) {
+      feitas.push({ simbolo: pos.simbolo, erro: error.message });
+    }
+  }
+  return feitas;
+}
+
+/**
+ * RECONCILIAÇÃO NO BOOT.
+ *
+ * O robô confiava no banco. Se alguém cancelasse uma ordem pelo aplicativo da
+ * Binance, ou se o processo caísse entre o cancelar e o recolocar, ele subia
+ * acreditando numa realidade que já não existia.
+ *
+ * Aqui a corretora é a fonte da verdade, e o banco se ajusta a ela.
+ */
+async function reconciliarNoBoot() {
+  const relatorio = { conferidas: [], reprotegidas: [], orfas: [], erro: null };
+  try {
+    const resultado = await conferirPosicoes();
+    relatorio.conferidas = resultado.conferidas;
+    relatorio.reprotegidas = await reprotegerDesprotegidas();
+
+    // Ordens abertas na Binance que o robô não reconhece. Ele NÃO cancela:
+    // podem ser ordens que o Bruno colocou na mão, e robô que apaga ordem de
+    // gente é pior do que robô que não sabe de nada. Só reporta.
+    const naBinance = await signedBinance('/api/v3/openOrders').catch(() => []);
+    const nossas = new Set((await posicoesEmAberto().catch(() => [])).map(p => p.ordem_id));
+    relatorio.orfas = (Array.isArray(naBinance) ? naBinance : [])
+      .filter(o => !nossas.has(String(o.clientOrderId || '').replace(/[eas]$/, '')))
+      .map(o => ({ simbolo: o.symbol, id: o.clientOrderId, lado: o.side, tipo: o.type, preco: o.price }));
+
+    if (relatorio.orfas.length) {
+      await saveAlerts([{
+        kind: 'robo', level: 'warning', symbol: null,
+        title: `${relatorio.orfas.length} ordem(ns) aberta(s) que o robô não reconhece`,
+        message: 'Podem ser suas, colocadas na mão. O robô não cancela o que não é dele — só avisa.',
+        fingerprint: `robo-orfas-${new Date().toISOString().slice(0, 13)}`,
+        payload: { orfas: relatorio.orfas },
+      }]).catch(() => {});
+    }
+  } catch (error) {
+    relatorio.erro = error.message;
+  }
+  return relatorio;
 }
 
 // ============================================================
@@ -585,6 +892,18 @@ async function cicloDoRobo({ forcado = false } = {}) {
       return (ultimoResultado = { acao: 'PARADO', motivo: 'DESLIGADO', texto: 'O robô está desligado. Ligue no painel para ele começar a olhar o mercado.', config: cfg, em: comecou });
     }
 
+    // ANTES de pensar em comprar qualquer coisa nova, fecha o que já está
+    // aberto. Decidir entrada nova sem saber o resultado das anteriores é
+    // como a trava de perda do dia deixa de existir na prática.
+    let posicoes = { conferidas: [] }, trailings = [];
+    if (cfg.modo !== 'SIMULACAO') {
+      posicoes = await conferirPosicoes().catch(error => ({ conferidas: [], erro: error.message }));
+      trailings = await subirStopsDoDia().catch(() => []);
+      await reprotegerDesprotegidas().catch(() => []);
+    }
+    const fechadasHoje = await posicoesFechadasHoje().catch(() => []);
+    const dia = perdaDoDia(fechadasHoje);
+
     const conta = await retratoDaConta(cfg.modo);
     const scan = await setupScanner();
     const candidatos = scan.setups || [];
@@ -597,7 +916,7 @@ async function cicloDoRobo({ forcado = false } = {}) {
     if (escolhido) {
       const precos = precosDoTrade(escolhido, cfg);
       if (precos) {
-        const info = await fetch(`${marketBase()}/api/v3/exchangeInfo?symbol=${escolhido.symbol}`, { signal: AbortSignal.timeout(10000) }).then(r => r.json()).catch(() => null);
+        const info = await fetchPublico(`${marketBase()}/api/v3/exchangeInfo?symbol=${escolhido.symbol}`, { signal: AbortSignal.timeout(10000) }).then(r => r.json()).catch(() => null);
         const mercado = info?.symbols?.[0];
         if (mercado?.status === 'TRADING' && mercado.isSpotTradingAllowed) {
           // calculateSpotPlan LANÇA quando os números não fecham. Isso não é
@@ -623,11 +942,18 @@ async function cicloDoRobo({ forcado = false } = {}) {
       desligadoManualmente: !salvo.ligado && !forcado,
       killSwitch: salvo.killSwitch,
       atrasoDadosMs: Date.now() - new Date(scan.generatedAt).getTime(),
+      // Agora é um número de verdade, tirado do que FECHOU hoje. Antes disto
+      // a trava de perda diária nunca disparava, porque comparava com zero.
+      perdaHojeUsdt: dia.perda,
     };
 
     const decisao = decidirRobo({ candidatos, estado, config: cfg, plano, agoraMs: Date.now() });
     decisao.modo = cfg.modo;
     decisao.duracaoMs = Date.now() - comecou;
+    decisao.dia = dia;
+    decisao.posicoes = posicoes.conferidas;
+    decisao.trailings = trailings.filter(t => t.mexeu || t.falhou);
+    decisao.limites = limites.estado();
 
     // ---- passo 6: GRAVA ANTES DE ENVIAR ----
     let linha = null;
@@ -678,6 +1004,16 @@ async function cicloDoRobo({ forcado = false } = {}) {
           decisao.enviado = true;
           decisao.resposta = resposta;
           if (linha?.id) await marcarDecisaoEnviada(linha.id, true, null, { ordem: decisao.ordem, resposta });
+          // A posição nasce aqui, no instante em que a ordem existe na
+          // corretora. É este registro que permite descobrir depois se ela
+          // preencheu, onde saiu e quanto deu.
+          await abrirPosicao({
+            ordemId: decisao.id, orderListId: resposta?.orderListId,
+            simbolo: decisao.simbolo, quantidade: decisao.quantidade,
+            entrada: Number(decisao.ordem.workingPrice),
+            stop: Number(decisao.ordem.pendingBelowStopPrice),
+            alvo: Number(decisao.ordem.pendingAbovePrice),
+          }).catch(() => {});
           await saveAlerts([{
             kind: 'robo', level: 'info', symbol: decisao.simbolo,
             title: `Robô comprou ${decisao.simbolo}`, message: decisao.texto,
@@ -709,6 +1045,122 @@ async function cicloDoRobo({ forcado = false } = {}) {
   }
 }
 
+// ============================================================
+// WEBSOCKET — saber na hora, não no próximo ciclo
+//
+// O ciclo roda a cada 60 segundos. Isso significa que o robô descobria o
+// preenchimento da entrada até um minuto depois de acontecer — e é justamente
+// nesse minuto que o preço anda mais, logo depois de o mercado aceitar a
+// ordem.
+//
+// O `user data stream` da Binance avisa no instante. Cada mudança de ordem
+// chega como um evento `executionReport`, com o `clientOrderId` que nós mesmos
+// demos a cada perna. É por isso que o id determinístico compensa três vezes:
+// evita ordem duplicada, permite perguntar depois de um timeout, e aqui
+// permite reconhecer o evento como nosso sem consultar nada.
+//
+// O POLLING NÃO SAI DE CENA. O WebSocket cai, o listenKey expira, a rede
+// oscila. Ele é o caminho rápido; o ciclo continua sendo a rede de segurança.
+// Trocar um pelo outro seria trocar atraso por cegueira.
+// ============================================================
+
+let ws = null, listenKey = null, keepAlive = null, reconexao = null, tentativas = 0;
+let ultimoEvento = 0;
+
+function websocketDisponivel() {
+  return typeof WebSocket === 'function';
+}
+
+function baseWs() {
+  const base = binanceConfig().base;
+  return base.includes('testnet')
+    ? 'wss://stream.testnet.binance.vision/ws'
+    : 'wss://stream.binance.com:9443/ws';
+}
+
+async function abrirStream() {
+  const cfg = binanceConfig();
+  if (!cfg.key || !cfg.secret || !websocketDisponivel()) return false;
+  try {
+    const r = await signedBinance('/api/v3/userDataStream', 'POST').catch(async () => {
+      // Este endpoint não é assinado: ele só quer a API key no cabeçalho.
+      const res = await fetch(`${cfg.base}/api/v3/userDataStream`, { method: 'POST', headers: { 'X-MBX-APIKEY': cfg.key } });
+      limites.registrar(res.status, res.headers);
+      return res.json();
+    });
+    listenKey = r?.listenKey;
+    if (!listenKey) return false;
+
+    ws = new WebSocket(`${baseWs()}/${listenKey}`);
+    ws.addEventListener('message', evento => {
+      ultimoEvento = Date.now();
+      let dados = null;
+      try { dados = JSON.parse(evento.data); } catch { return; }
+      if (dados.e !== 'executionReport') return;
+      const id = String(dados.c || '');
+      // Só reage ao que é nosso: o prefixo 'bt' é a assinatura do robô.
+      if (!id.startsWith('bt')) return;
+      // Preenchimento ou morte de perna muda o estado da posição — vale
+      // conferir na hora em vez de esperar o ciclo.
+      if (['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(String(dados.X || ''))) {
+        conferirPosicoes().catch(() => {});
+      }
+    });
+    ws.addEventListener('close', () => agendarReconexao('conexão fechada'));
+    ws.addEventListener('error', () => agendarReconexao('erro na conexão'));
+    ws.addEventListener('open', () => { tentativas = 0; console.log('Robô: stream da Binance conectado'); });
+
+    // O listenKey morre em 60 minutos sem renovação. Renovar a cada 30 é a
+    // recomendação da Binance, e deixa uma renovação inteira de margem para
+    // uma falhar sem derrubar a conexão.
+    if (keepAlive) clearInterval(keepAlive);
+    keepAlive = setInterval(async () => {
+      await fetch(`${cfg.base}/api/v3/userDataStream?listenKey=${listenKey}`, { method: 'PUT', headers: { 'X-MBX-APIKEY': cfg.key } })
+        .catch(() => agendarReconexao('keepalive falhou'));
+    }, 30 * 60 * 1000);
+    if (keepAlive.unref) keepAlive.unref();
+    return true;
+  } catch (error) {
+    agendarReconexao(error.message);
+    return false;
+  }
+}
+
+/** Reconexão com espera crescente. Reconectar em loop apertado depois de uma
+ *  queda é a forma mais rápida de gastar o limite de 300 conexões por 5
+ *  minutos e ficar sem stream justo quando ele é mais necessário. */
+function agendarReconexao(motivo) {
+  if (reconexao) return;
+  tentativas = Math.min(tentativas + 1, 6);
+  const espera = Math.min(2 ** tentativas, 60) * 1000;
+  console.log(`Robô: stream caiu (${motivo}). Reconectando em ${espera / 1000}s.`);
+  reconexao = setTimeout(async () => {
+    reconexao = null;
+    fecharStream(false);
+    await abrirStream();
+  }, espera);
+  if (reconexao.unref) reconexao.unref();
+}
+
+function fecharStream(definitivo = true) {
+  if (keepAlive) { clearInterval(keepAlive); keepAlive = null; }
+  if (definitivo && reconexao) { clearTimeout(reconexao); reconexao = null; }
+  try { ws?.close(); } catch {}
+  ws = null;
+}
+
+function estadoDoStream() {
+  return {
+    disponivel: websocketDisponivel(),
+    conectado: Boolean(ws) && ws.readyState === 1,
+    ultimoEventoHaMs: ultimoEvento ? Date.now() - ultimoEvento : null,
+    tentativas,
+    nota: websocketDisponivel()
+      ? 'O ciclo continua rodando mesmo com o stream de pé: ele é a rede de segurança.'
+      : 'Este Node não tem WebSocket global. O robô funciona igual, só descobre o preenchimento no ciclo seguinte.',
+  };
+}
+
 /** Liga o relógio. Um `setInterval` só, guardado numa variável, para religar
  *  não criar dois agendadores mandando ordem em dobro. */
 function ligarAgendador(segundos) {
@@ -716,12 +1168,15 @@ function ligarAgendador(segundos) {
   const intervalo = Math.max(30, Number(segundos) || 60) * 1000;
   agendador = setInterval(() => { cicloDoRobo().catch(error => console.error('Robô:', error.message)); }, intervalo);
   if (agendador.unref) agendador.unref();
+  // O stream sobe junto, mas nunca substitui o ciclo.
+  abrirStream().catch(() => {});
   return intervalo;
 }
 
 function pararAgendador() {
   if (agendador) clearInterval(agendador);
   agendador = null;
+  fecharStream();
 }
 
 /** O painel: o que ele é, o que ele fez e por quê. */
@@ -737,6 +1192,8 @@ async function painelDoRobo() {
     config: cfg,
     ultimoCiclo: salvo.ultimoCiclo,
     ultimoResultado,
+    stream: estadoDoStream(),
+    limites: limites.estado(),
     protecao: 'Entrada, stop e alvo saem juntos num OTOCO. Depois que a entrada preenche, o stop e o alvo vivem dentro da Binance — se o robô cair, eles continuam de pé.',
     atualizadoEm: new Date().toISOString(),
   };
@@ -789,7 +1246,7 @@ async function api(req, res, pathname) {
     }
     if (pathname === '/api/market/radar' && req.method === 'GET') {const coins=await marketRadar(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50));return json(res,200,{coins,alerts:marketAlerts(coins),updatedAt:new Date().toISOString()});}
     if (pathname === '/api/market/symbols' && req.method === 'GET') {
-      const response=await fetch(`${marketBase()}/api/v3/exchangeInfo`),data=await response.json();
+      const response=await fetchPublico(`${marketBase()}/api/v3/exchangeInfo`),data=await response.json();
       if(!response.ok)throw new Error(data.msg||'Lista de mercados indisponível.');
       const symbols=data.symbols.filter(item=>item.status==='TRADING').map(item=>({symbol:item.symbol,base:item.baseAsset,quote:item.quoteAsset,spot:item.isSpotTradingAllowed}));
       return json(res,200,{symbols,count:symbols.length,updatedAt:new Date().toISOString()});
@@ -797,7 +1254,7 @@ async function api(req, res, pathname) {
     if (pathname === '/api/market/klines' && req.method === 'GET') {
       const url=new URL(req.url,'http://localhost'),symbol=normalizeMarketSymbol(url.searchParams.get('symbol')),interval=String(url.searchParams.get('interval')||'1d');
       if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!['15m','1h','4h','1d','1w'].includes(interval))return json(res,400,{error:'Par ou intervalo inválido.'});
-      const response=await fetch(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=120`),data=await response.json();
+      const response=await fetchPublico(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=120`),data=await response.json();
       if(!response.ok)throw new Error(data.msg||'Gráfico indisponível.');
       return json(res,200,{symbol,interval,candles:data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5])}))});
     }
@@ -805,9 +1262,9 @@ async function api(req, res, pathname) {
       const symbol=normalizeMarketSymbol(new URL(req.url,'http://localhost').searchParams.get('symbol'));
       if(!/^[A-Z0-9]{5,20}$/.test(symbol))return json(res,400,{error:'Par inválido.'});
       const [ticker,book,exchangeInfo,isolatedPairs,...sets]=await Promise.all([
-        fetch(`${marketBase()}/api/v3/ticker/24hr?symbol=${symbol}`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Ticker indisponível.');return d}),
-        fetch(`${marketBase()}/api/v3/depth?symbol=${symbol}&limit=100`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Livro de ofertas indisponível.');return d}),
-        fetch(`${marketBase()}/api/v3/exchangeInfo?symbol=${symbol}`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Informações do mercado indisponíveis.');return d}),
+        fetchPublico(`${marketBase()}/api/v3/ticker/24hr?symbol=${symbol}`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Ticker indisponível.');return d}),
+        fetchPublico(`${marketBase()}/api/v3/depth?symbol=${symbol}&limit=100`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Livro de ofertas indisponível.');return d}),
+        fetchPublico(`${marketBase()}/api/v3/exchangeInfo?symbol=${symbol}`).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.msg||'Informações do mercado indisponíveis.');return d}),
         signedBinance('/sapi/v1/margin/isolated/allPairs').catch(()=>[]),
         ...['15m','1h','4h'].map(interval=>publicKlines(symbol,interval,120))
       ]);
@@ -829,7 +1286,7 @@ async function api(req, res, pathname) {
     if (pathname === '/api/spot/plan' && req.method === 'POST') {
       const data=await body(req),symbol=normalizeMarketSymbol(data.symbol);
       if(!/^[A-Z0-9]{5,20}$/.test(symbol)||!symbol.endsWith('USDT'))return json(res,400,{error:'Escolha um par Spot cotado em USDT.'});
-      const response=await fetch(`${marketBase()}/api/v3/exchangeInfo?symbol=${symbol}`,{signal:AbortSignal.timeout(10000)}),info=await response.json();if(!response.ok)throw new Error(info.msg||'Filtros do par indisponíveis.');const market=info.symbols?.[0];if(!market||market.status!=='TRADING'||!market.isSpotTradingAllowed)return json(res,400,{error:'Este par não está disponível para Spot.'});
+      const response=await fetchPublico(`${marketBase()}/api/v3/exchangeInfo?symbol=${symbol}`,{signal:AbortSignal.timeout(10000)}),info=await response.json();if(!response.ok)throw new Error(info.msg||'Filtros do par indisponíveis.');const market=info.symbols?.[0];if(!market||market.status!=='TRADING'||!market.isSpotTradingAllowed)return json(res,400,{error:'Este par não está disponível para Spot.'});
       const plan=calculateSpotPlan({symbol,capital:Number(data.capital),riskPct:Number(data.riskPct),entry:Number(data.entry),stop:Number(data.stop),target:Number(data.target),feeRate:data.feeRate===undefined ? .001 : Number(data.feeRate),filters:market.filters});
       // 02/09/2026 — ENTRADA ESTICADA. O scanner marcou ARBUSDT como PULLBACK
       // LONG a 0,1233; quando a tela de trade abriu, o par estava 0,1322 —
@@ -845,6 +1302,20 @@ async function api(req, res, pathname) {
     if (pathname === '/api/robo/estado' && req.method === 'GET') return json(res,200,await painelDoRobo());
     if (pathname === '/api/robo/historico' && req.method === 'GET') return json(res,200,{decisoes:await decisoesDoRobo(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50))});
     if (pathname === '/api/robo/ciclo' && req.method === 'POST') return json(res,200,{decisao:await cicloDoRobo({forcado:true}),painel:await painelDoRobo()});
+    if (pathname === '/api/robo/posicoes' && req.method === 'GET') {
+      const fechadas=await posicoesFechadasHoje().catch(()=>[]);
+      // Sem banco o painel mostra vazio com explicacao, em vez de quebrar. Uma
+      // tela de robo que da erro parece robo quebrado, e a diferenca entre
+      // "sem banco" e "quebrado" e exatamente a que o Bruno precisa enxergar.
+      const posicoes=await posicoesDoRobo(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50)).catch(()=>null);
+      return json(res,200,{posicoes:posicoes||[],semBanco:posicoes===null,hoje:perdaDoDia(fechadas),limites:limites.estado(),stream:estadoDoStream()});
+    }
+    if (pathname === '/api/robo/conferir' && req.method === 'POST') {
+      const conferidas=await conferirPosicoes();
+      const reprotegidas=await reprotegerDesprotegidas().catch(()=>[]);
+      return json(res,200,{...conferidas,reprotegidas,hoje:perdaDoDia(await posicoesFechadasHoje().catch(()=>[]))});
+    }
+    if (pathname === '/api/robo/reconciliar' && req.method === 'POST') return json(res,200,await reconciliarNoBoot());
     if (pathname === '/api/robo/config' && req.method === 'POST') {
       const dados=await body(req),cfg=normalizarConfig(dados.config||dados);
       await salvarEstadoDoRobo({config:cfg});
@@ -906,7 +1377,7 @@ async function api(req, res, pathname) {
     if (pathname === '/api/positions/assets' && req.method === 'GET') {
       let crypto=monitorAssetCache.assets,source='cache',stale=false;
       if(!crypto.length||Date.now()-monitorAssetCache.updatedAt>15*60*1000){
-        try{const response=await fetch(`${marketBase()}/api/v3/exchangeInfo`,{signal:AbortSignal.timeout(10000)}),data=await response.json();if(!response.ok)throw new Error(data.msg||'Catálogo indisponível.');const preferred=monitorFallback.map(x=>x.symbol);crypto=(data.symbols||[]).filter(item=>item.status==='TRADING'&&item.isSpotTradingAllowed&&item.quoteAsset==='USDT'&&!/(UP|DOWN|BULL|BEAR)$/.test(item.baseAsset)).map(item=>({symbol:item.symbol,label:`${item.baseAsset} / USDT`,market:'Cripto · Binance',quantityLabel:item.baseAsset,feed:'Binance'})).sort((a,b)=>{const ai=preferred.indexOf(a.symbol),bi=preferred.indexOf(b.symbol);if(ai>=0||bi>=0)return (ai<0?999:ai)-(bi<0?999:bi);return a.label.localeCompare(b.label)});monitorAssetCache={assets:crypto,updatedAt:Date.now()};source='Binance'}catch(error){crypto=crypto.length?crypto:monitorFallback;source=monitorAssetCache.assets.length?'cache':'fallback';stale=true}}
+        try{const response=await fetchPublico(`${marketBase()}/api/v3/exchangeInfo`,{signal:AbortSignal.timeout(10000)}),data=await response.json();if(!response.ok)throw new Error(data.msg||'Catálogo indisponível.');const preferred=monitorFallback.map(x=>x.symbol);crypto=(data.symbols||[]).filter(item=>item.status==='TRADING'&&item.isSpotTradingAllowed&&item.quoteAsset==='USDT'&&!/(UP|DOWN|BULL|BEAR)$/.test(item.baseAsset)).map(item=>({symbol:item.symbol,label:`${item.baseAsset} / USDT`,market:'Cripto · Binance',quantityLabel:item.baseAsset,feed:'Binance'})).sort((a,b)=>{const ai=preferred.indexOf(a.symbol),bi=preferred.indexOf(b.symbol);if(ai>=0||bi>=0)return (ai<0?999:ai)-(bi<0?999:bi);return a.label.localeCompare(b.label)});monitorAssetCache={assets:crypto,updatedAt:Date.now()};source='Binance'}catch(error){crypto=crypto.length?crypto:monitorFallback;source=monitorAssetCache.assets.length?'cache':'fallback';stale=true}}
       const mnq={symbol:'MNQ',label:'MNQ · Micro E-mini Nasdaq-100',market:'Futuros EUA',quantityLabel:'Contratos',feed:'Yahoo Finance indicativo'};
       return json(res,200,{assets:[mnq,...crypto],count:crypto.length+1,source,stale,updatedAt:new Date(monitorAssetCache.updatedAt||Date.now()).toISOString()});
     }
@@ -1019,6 +1490,14 @@ if (require.main === module) {
     const salvo=await estadoDoRobo().catch(()=>null);
     if(salvo?.ligado&&!salvo.killSwitch){
       const cfg=configDoRobo(salvo.config);
+      // A CORRETORA E A FONTE DA VERDADE, o banco se ajusta a ela. Sem isto o
+      // robo subia acreditando numa realidade que podia ter mudado enquanto
+      // ele estava fora: ordem cancelada pelo aplicativo, posicao que fechou,
+      // ou um trailing interrompido no meio deixando a posicao descoberta.
+      if(cfg.modo!=='SIMULACAO'){
+        const r=await reconciliarNoBoot();
+        console.log(`Robô: ${r.conferidas.length} posição(ões) conferida(s), ${r.reprotegidas.length} reprotegida(s), ${r.orfas.length} ordem(ns) órfã(s)${r.erro?` — ${r.erro}`:''}`);
+      }
       ligarAgendador(cfg.intervaloSegundos);
       console.log(`Robô religado em modo ${cfg.modo}, ciclo de ${cfg.intervaloSegundos}s`);
     }else{

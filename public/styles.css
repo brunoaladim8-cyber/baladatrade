@@ -199,3 +199,13 @@ main{margin:0;padding:20px}
 .robo-explica{max-width:420px;color:var(--muted);font-size:13px}
 #roboPanico{background:var(--red);color:#fff;margin-top:12px}
 #roboEstado[data-x]{letter-spacing:.04em}
+
+/* Posições do robô. DESPROTEGIDA precisa gritar: é a única linha da tabela
+   que significa dinheiro no mercado sem nada segurando. */
+.robo-etiqueta{display:inline-block;border-radius:999px;padding:3px 9px;font-size:10px;font-weight:900;letter-spacing:.06em}
+.robo-etiqueta.robo-ok{background:#dff2e9;color:var(--green)}
+.robo-etiqueta.robo-espera{background:#eef2f0;color:var(--muted)}
+.robo-etiqueta.robo-neutro{background:#eef2f0;color:var(--muted)}
+.robo-etiqueta.robo-perigo{background:var(--red);color:#fff}
+tr.robo-perigo{background:#fdf4f4}
+tr.robo-perigo td{font-weight:700}

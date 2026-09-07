@@ -61,30 +61,44 @@ O robô é a peça que faltava, e é só isso: quem aperta o botão.
 
 ---
 
-## Próximos pedidos que fazem sentido
+## Feito em 07/09/2026
+
+Os cinco itens que estavam nesta lista foram entregues:
+
+1. **Resultado real por trade** — `resultado.js` lê as três pernas do OTOCO e
+   conclui o desfecho, com taxas reais. É daqui que sai a trava de perda
+   diária, que antes comparava com zero.
+2. **Reconciliação no boot** — a corretora vira fonte da verdade; o banco se
+   ajusta. Ordens órfãs são reportadas, nunca canceladas.
+3. **Backoff de rate limit** — `limites.js` lê `x-mbx-used-weight-1m` e para em
+   70% do teto; respeita `Retry-After` no 429 para não virar 418.
+4. **Trailing pelo guardião** — o robô obedece o `guardiao-do-lucro.js` e sobe
+   o stop sozinho. A janela descoberta entre cancelar e recolocar está
+   documentada e mitigada, não escondida.
+5. **WebSocket** — `user data stream` avisa no instante do preenchimento, com
+   reconexão em espera crescente. O polling continua como rede de segurança.
+
+Estado novo que nasceu disso e vale conhecer: **DESPROTEGIDA** — a entrada
+preencheu e não há stop nem alvo ativos. Acontece se alguém cancelar o OCO pelo
+aplicativo ou se um trailing falhar no meio. É o único estado que dispara
+alerta crítico e recolocação automática.
+
+## O que ainda falta
 
 Em ordem de quanto cada um resolve:
 
-1. **Trailing pelo guardião.** Hoje o OTOCO sai com stop fixo. O
-   `guardiao-do-lucro.js` já sabe calcular onde o stop deveria estar em cada
-   múltiplo de R — falta o robô cancelar o OCO e recolocar mais alto quando o
-   trade passa de 1R. É o que separa quem fica com o lucro de quem devolve.
+1. **Saída por tempo.** Uma posição pode ficar semanas entre o stop e o alvo,
+   segurando capital que renderia em outro lugar. Falta uma regra de "não
+   andou em N horas, sai" — e ela precisa nascer do histórico, não de palpite.
 
-2. **WebSocket no lugar do polling.** O ciclo consulta preço por REST a cada
-   60s. Com `user data stream` o robô sabe do preenchimento no instante em que
-   acontece, gasta menos peso de rate limit e não decide com preço velho.
+2. **Curva de resultado do robô.** As posições fechadas já têm resultado
+   líquido; falta o gráfico que mostra se ele ganha ou perde ao longo do tempo.
+   É o único número que decide se o robô continua ligado.
 
-3. **Reconciliação no boot.** Ao subir, comparar `GET /api/v3/openOrders` e
-   `/api/v3/myTrades` com o que está no banco. Hoje o robô confia no banco;
-   se alguém cancelar uma ordem pelo app da Binance, ele não fica sabendo.
+3. **Peneira aprendida do próprio histórico.** Hoje os cortes da `peneira` são
+   fixos (RSI 75, ATR 3%, volume 1x). Com resultado real gravado dá para
+   descobrir quais deles realmente separam trade bom de ruim — e quais só
+   estão atrapalhando.
 
-4. **Backoff de rate limit.** Ler `X-MBX-USED-WEIGHT` e respeitar
-   `Retry-After` no 429. Sem isso, um dia ruim vira ban de 418 — que começa em
-   2 minutos e chega a 3 dias.
-
-5. **Resultado real por trade.** Fechar o ciclo: quando o OCO executa, gravar
-   se saiu no stop ou no alvo e quanto foi o resultado líquido. Sem isso o
-   `perdaMaximaDiaUsdt` nunca tem um número de verdade para comparar.
-
-O item 5 é pré-requisito honesto do item 1: sem saber o resultado dos trades,
-nenhuma trava de perda diária funciona de fato.
+4. **Short em margem.** Só faz sentido depois de o Spot mostrar resultado
+   positivo por meses, e muda o risco por completo. Não é próximo passo.

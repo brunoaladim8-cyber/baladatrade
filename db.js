@@ -194,7 +194,97 @@ async function initDatabase(){
       atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     INSERT INTO robo_estado(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
+
+    -- POSICOES DO ROBO — 07/09/2026
+    -- O robo mandava a ordem e nunca mais olhava. Sem esta tabela, tres coisas
+    -- eram enfeite: a trava de perda do dia (nao tinha numero), o guardiao
+    -- (nao sabia se a entrada preencheu) e o historico (dizia o que ele TENTOU,
+    -- nunca o que deu).
+    CREATE TABLE IF NOT EXISTS robo_posicoes (
+      id BIGSERIAL PRIMARY KEY,
+      ordem_id VARCHAR(48) NOT NULL UNIQUE,
+      order_list_id BIGINT,
+      simbolo VARCHAR(24) NOT NULL,
+      estado VARCHAR(16) NOT NULL DEFAULT 'AGUARDANDO',
+      quantidade_pedida NUMERIC(36,18) NOT NULL,
+      entrada_pedida NUMERIC(30,12) NOT NULL,
+      stop_pedido NUMERIC(30,12) NOT NULL,
+      alvo_pedido NUMERIC(30,12) NOT NULL,
+      quantidade NUMERIC(36,18),
+      preco_entrada NUMERIC(30,12),
+      preco_saida NUMERIC(30,12),
+      saida_tipo VARCHAR(8),
+      custo NUMERIC(30,12),
+      recebido NUMERIC(30,12),
+      taxas NUMERIC(30,12) DEFAULT 0,
+      taxas_incertas BOOLEAN NOT NULL DEFAULT FALSE,
+      resultado_usdt NUMERIC(30,12),
+      -- O pico e o stop atual sustentam o trailing: sem guardar o melhor preco
+      -- ja visto, a escada do guardiao desce quando o preco recua, e stop que
+      -- desce nao e protecao, e permissao para perder mais.
+      pico_preco NUMERIC(30,12),
+      stop_atual NUMERIC(30,12),
+      trailing_degrau VARCHAR(16),
+      trailing_em TIMESTAMPTZ,
+      texto TEXT,
+      aberta_em TIMESTAMPTZ,
+      fechada_em TIMESTAMPTZ,
+      criada_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      atualizada_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS robo_posicoes_estado_idx ON robo_posicoes(estado,atualizada_em DESC);
+    CREATE INDEX IF NOT EXISTS robo_posicoes_fechada_idx ON robo_posicoes(fechada_em DESC);
   `);return true;
+}
+
+// ------------------------------------------------------------
+// POSICOES DO ROBO
+// ------------------------------------------------------------
+
+/** Abre o registro no instante em que a ordem sai. Se o id ja existe, devolve
+ *  o que ja estava la — reenvio nao cria posicao nova. */
+async function abrirPosicao(p){
+  const db=database();if(!db)return {semBanco:true};
+  const r=await db.query(`INSERT INTO robo_posicoes(ordem_id,order_list_id,simbolo,quantidade_pedida,entrada_pedida,stop_pedido,alvo_pedido,stop_atual,pico_preco)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$6,$5)
+    ON CONFLICT(ordem_id) DO UPDATE SET atualizada_em=NOW()
+    RETURNING id,ordem_id,estado`,
+    [p.ordemId,p.orderListId||null,p.simbolo,p.quantidade,p.entrada,p.stop,p.alvo]);
+  return r.rows[0];
+}
+
+/** Tudo que ainda pode mudar: na fila, comprada, ou comprada e desprotegida. */
+async function posicoesEmAberto(){
+  const db=database();if(!db)return [];
+  return (await db.query(`SELECT id,ordem_id,order_list_id,simbolo,estado,quantidade_pedida::float8,entrada_pedida::float8,stop_pedido::float8,alvo_pedido::float8,quantidade::float8,preco_entrada::float8,pico_preco::float8,stop_atual::float8,trailing_degrau,criada_em
+    FROM robo_posicoes WHERE estado IN ('AGUARDANDO','ABERTA','DESPROTEGIDA') ORDER BY criada_em ASC`)).rows;
+}
+
+async function atualizarPosicao(ordemId,campos={}){
+  const db=database();if(!db)return null;
+  const mapa={estado:'estado',saidaTipo:'saida_tipo',quantidade:'quantidade',precoEntrada:'preco_entrada',precoSaida:'preco_saida',custo:'custo',recebido:'recebido',taxas:'taxas',taxasIncertas:'taxas_incertas',resultadoLiquido:'resultado_usdt',picoPreco:'pico_preco',stopAtual:'stop_atual',trailingDegrau:'trailing_degrau',trailingEm:'trailing_em',texto:'texto',abertaEm:'aberta_em',fechadaEm:'fechada_em',orderListId:'order_list_id'};
+  const colunas=[],valores=[];
+  for(const [chave,coluna] of Object.entries(mapa)){
+    if(campos[chave]===undefined)continue;
+    valores.push(campos[chave]);colunas.push(`${coluna}=$${valores.length+1}`);
+  }
+  if(!colunas.length)return null;
+  const r=await db.query(`UPDATE robo_posicoes SET ${colunas.join(',')},atualizada_em=NOW() WHERE ordem_id=$1 RETURNING id,estado`,[ordemId,...valores]);
+  return r.rows[0]||null;
+}
+
+/** O que fechou hoje. E daqui que sai o numero da trava de perda diaria —
+ *  prejuizo aberto ainda pode virar lucro e por isso nao entra na conta. */
+async function posicoesFechadasHoje(){
+  const db=database();if(!db)return [];
+  return (await db.query(`SELECT ordem_id,simbolo,saida_tipo,resultado_usdt::float8 AS "resultadoLiquido",fechada_em
+    FROM robo_posicoes WHERE estado='FECHADA' AND fechada_em >= date_trunc('day',NOW()) ORDER BY fechada_em DESC`)).rows;
+}
+
+async function posicoesDoRobo(limit=50){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  return (await db.query(`SELECT id,ordem_id,simbolo,estado,saida_tipo,quantidade::float8,preco_entrada::float8,preco_saida::float8,stop_atual::float8,pico_preco::float8,trailing_degrau,taxas::float8,taxas_incertas,resultado_usdt::float8,texto,aberta_em,fechada_em,criada_em
+    FROM robo_posicoes ORDER BY criada_em DESC LIMIT $1`,[Math.min(Math.max(limit,1),500)])).rows;
 }
 
 // ------------------------------------------------------------
@@ -367,4 +457,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo};
+module.exports={initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo};

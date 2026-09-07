@@ -39,6 +39,10 @@
     <header><div><p class="eyebrow">CENTRAL DO TRADER</p><h1 id="viewTitle">Bom dia, trader.</h1><p class="muted">Seu processo vale mais que uma operação.</p></div><div class="header-actions"><button class="secondary install-app hidden" id="installApp">Instalar app</button><button class="secondary" id="logout">Sair</button><button class="primary" id="newTrade">+ Registrar trade</button></div></header>
 
     <section id="dashboard" class="view active">
+      <article class="panel diagnostico" id="diagnostico">
+        <div class="panel-head"><div><small>DIAGNÓSTICO</small><h3 id="diagTitulo">Conferindo o sistema…</h3></div><button class="link" id="diagAtualizar">Reconferir</button></div>
+        <div id="diagLista" class="diag-lista"></div>
+      </article>
       <div class="hero">
         <div><span class="pill">NÍVEL <b id="level">1</b></span><h2>Construa consistência.<br><em>Um plano por vez.</em></h2><p>Ganhe XP seguindo regras de risco, documentando decisões e revisando resultados.</p></div>
         <div class="level-card"><div class="level-ring"><span id="levelRing">1</span></div><div><small>PROGRESSO</small><strong><span id="xp">0</span> XP</strong><div class="bar"><i id="xpBar"></i></div><small id="nextLevel">100 XP para o nível 2</small></div></div>
@@ -73,6 +77,10 @@
         <article><small>ÚLTIMO CICLO</small><strong id="roboUltimo">—</strong><span id="roboIntervalo">—</span></article>
         <article><small>TETO POR ORDEM</small><strong id="roboTeto">—</strong><span>Nunca passa disso</span></article>
       </div>
+      <article class="panel robo-impedimentos hidden" id="roboImpedimentos">
+        <div class="panel-head"><div><small>O QUE IMPEDE O ROBÔ</small><h3 id="roboImpedimentosTitulo">Ele não vai conseguir operar</h3></div></div>
+        <ul id="roboImpedimentosLista"></ul>
+      </article>
       <article class="panel robo-decisao">
         <div class="panel-head"><div><small>O QUE ELE DECIDIU AGORA</small><h3 id="roboAcao">Aguardando</h3></div><span class="tag" id="roboMotivo">—</span></div>
         <p id="roboTexto" class="muted">Ligue o robô ou rode um ciclo para ver a decisão e o motivo dela.</p>

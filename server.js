@@ -60,13 +60,31 @@ async function body(req) {
   return JSON.parse(Buffer.concat(chunks).toString() || '{}');
 }
 
+// A Binance recusa qualquer ordem Spot abaixo de ~5 USDT (MIN_NOTIONAL). Um
+// teto menor que isso nao "protege": impede o robo de existir, e sem avisar.
+const MINIMO_NEGOCIAVEL = 5;
+
+/** Le um numero do ambiente com honestidade.
+ *
+ *  `Number(process.env.X || 100)` parece certo e nao e: a string '0' e
+ *  TRUTHY, entao `'0' || 100` devolve '0' e o teto vira zero. Foi exatamente
+ *  isso que apareceu na tela do Bruno em 07/09 — "Teto por ordem: 0" — e com
+ *  teto zero NENHUMA ordem passa, nunca, sem nenhuma mensagem explicando. */
+function numeroDoAmbiente(nome, padrao, minimo = 0) {
+  const bruto = process.env[nome];
+  if (bruto === undefined || bruto === null || String(bruto).trim() === '') return padrao;
+  const valor = Number(bruto);
+  if (!Number.isFinite(valor) || valor < minimo) return padrao;
+  return valor;
+}
+
 function binanceConfig() {
   return {
     key: process.env.BINANCE_API_KEY,
     secret: process.env.BINANCE_API_SECRET,
     base: process.env.BINANCE_BASE_URL || 'https://testnet.binance.vision',
     live: process.env.ENABLE_LIVE_TRADING === 'true',
-    max: Number(process.env.MAX_ORDER_NOTIONAL || 100),
+    max: numeroDoAmbiente('MAX_ORDER_NOTIONAL', 100, MINIMO_NEGOCIAVEL),
   };
 }
 
@@ -816,15 +834,18 @@ let ultimoResultado = null;
  *  de notional). Nenhuma tela deve conseguir ligar dinheiro de verdade
  *  sozinha: isso continua sendo decisão de quem tem acesso ao servidor. */
 function configDoRobo(doBanco = {}) {
+  const tetoGlobal = numeroDoAmbiente('MAX_ORDER_NOTIONAL', 100, MINIMO_NEGOCIAVEL);
   const cfg = normalizarConfig({
     ...doBanco,
     modo: doBanco.modo || process.env.ROBO_MODO || 'SIMULACAO',
-    notionalMaximo: Number(doBanco.notionalMaximo) || Number(process.env.MAX_ORDER_NOTIONAL || 100),
+    notionalMaximo: Number(doBanco.notionalMaximo) || tetoGlobal,
   });
   const podeReal = process.env.ENABLE_LIVE_TRADING === 'true' && process.env.ROBO_PERMITE_REAL === 'true';
   if (cfg.modo === 'REAL' && !podeReal) cfg.modo = 'TESTNET';
-  // O teto do robô nunca passa o teto global do projeto.
-  cfg.notionalMaximo = Math.min(cfg.notionalMaximo, Number(process.env.MAX_ORDER_NOTIONAL || 100));
+  // O teto do robô nunca passa o teto global do projeto — mas também nunca cai
+  // abaixo do mínimo negociável, porque abaixo disso ele não seria um limite:
+  // seria um robô desligado fingindo estar ligado.
+  cfg.notionalMaximo = Math.max(MINIMO_NEGOCIAVEL, Math.min(cfg.notionalMaximo, tetoGlobal));
   return cfg;
 }
 
@@ -1183,6 +1204,18 @@ function pararAgendador() {
 async function painelDoRobo() {
   const salvo = await estadoDoRobo().catch(() => ({ ligado: false, killSwitch: false, config: {}, ultimoCiclo: null, semBanco: true }));
   const cfg = configDoRobo(salvo.config);
+  const chaves = binanceConfig();
+
+  // Tudo que impede o robô de trabalhar, dito antes de ele tentar.
+  const impedimentos = [];
+  if (salvo.semBanco && cfg.modo !== 'SIMULACAO') impedimentos.push('O PostgreSQL não está configurado. Fora da simulação o robô não opera sem ele: é o banco que impede ordem duplicada.');
+  if (!chaves.key || !chaves.secret) {
+    if (cfg.modo === 'SIMULACAO') impedimentos.push('Sem chave da Binance. Em simulação ele funciona assim mesmo, mas não vai enviar nada nunca.');
+    else impedimentos.push('Sem BINANCE_API_KEY e BINANCE_API_SECRET no servidor não há como enviar ordem.');
+  }
+  if (cfg.notionalMaximo < MINIMO_NEGOCIAVEL) impedimentos.push(`O teto por ordem está em ${cfg.notionalMaximo} USDT e a Binance recusa ordem Spot abaixo de ${MINIMO_NEGOCIAVEL}. Nenhuma ordem passaria.`);
+  if (salvo.killSwitch) impedimentos.push('O kill switch está acionado. Solte antes de ligar.');
+
   return {
     ligado: salvo.ligado,
     killSwitch: salvo.killSwitch,
@@ -1194,6 +1227,11 @@ async function painelDoRobo() {
     ultimoResultado,
     stream: estadoDoStream(),
     limites: limites.estado(),
+    // O painel tem de responder a pergunta que o Bruno faz olhando a tela:
+    // "isso aqui vai fazer alguma coisa?". Antes ele mostrava os limites e
+    // deixava a conclusao por conta de quem olhava.
+    podeOperar: impedimentos.length === 0,
+    impedimentos,
     protecao: 'Entrada, stop e alvo saem juntos num OTOCO. Depois que a entrada preenche, o stop e o alvo vivem dentro da Binance — se o robô cair, eles continuam de pé.',
     atualizadoEm: new Date().toISOString(),
   };
@@ -1216,7 +1254,37 @@ async function api(req, res, pathname) {
   if (!authorized(req)) return json(res, 401, {error:'Não autorizado'});
   const cfg = binanceConfig();
   if (pathname === '/api/binance/status') return json(res, 200, {configured:Boolean(cfg.key&&cfg.secret), environment:cfg.base.includes('testnet')?'testnet':'real', liveEnabled:cfg.live, maxOrderNotional:cfg.max});
-  if (pathname === '/api/system/health' && req.method === 'GET') return json(res,200,{app:true,database:await databaseHealth(),marketFeed:'Binance público',updatedAt:new Date().toISOString()});
+  if (pathname === '/api/system/health' && req.method === 'GET') {
+    // O DIAGNOSTICO. 07/09/2026: "muita coisa nao pega nao serve".
+    //
+    // Quase nada estava quebrado — faltava uma variavel de ambiente aqui, uma
+    // permissao ali, e a tela ficava vazia sem dizer por que. Tela vazia e
+    // indistinguivel de tela quebrada, e a diferenca entre "falta configurar"
+    // e "esta com defeito" e a unica que importa para quem vai consertar.
+    const banco=await databaseHealth(),chaves=binanceConfig(),robo=await estadoDoRobo().catch(()=>({ligado:false}));
+    const item=(nome,ok,detalhe,comoResolver)=>({nome,ok,detalhe,comoResolver:ok?null:comoResolver});
+    const itens=[
+      item('Aplicação',true,'No ar e respondendo.'),
+      item('Banco de dados',banco.online===true,banco.message,'Configure DATABASE_URL no Railway. Sem banco: nada de histórico, posições, ledger ou diário — e o robô só opera em simulação.'),
+      item('Chave da Binance',Boolean(chaves.key&&chaves.secret),chaves.key?`Conectada em ${chaves.base.includes('testnet')?'Testnet':'produção'}.`:'Não configurada.','Adicione BINANCE_API_KEY e BINANCE_API_SECRET. Crie a chave sem permissão de saque e com restrição de IP.'),
+      item('Preços do mercado',true,'Binance pública, sem chave.'),
+      item('Teto por ordem',chaves.max>=MINIMO_NEGOCIAVEL,`${chaves.max} USDT por ordem.`,`MAX_ORDER_NOTIONAL está abaixo de ${MINIMO_NEGOCIAVEL} USDT, que é o mínimo que a Binance aceita. Nenhuma ordem passaria.`),
+      item('Trading real',chaves.live,chaves.live?'Liberado no servidor.':'Bloqueado — só Testnet e simulação.','Só libere com ENABLE_LIVE_TRADING=true quando quiser dinheiro de verdade. Ficar bloqueado é o estado seguro.'),
+      item('Robô',Boolean(robo.ligado),robo.ligado?'Ligado, olhando o mercado.':'Desligado.','Ligue na aba Robô. Ele começa em simulação e não envia nada.'),
+      item('Análises com Claude',Boolean(process.env.ANTHROPIC_API_KEY),process.env.ANTHROPIC_API_KEY?'Disponível.':'Sem chave.','Opcional. Adicione ANTHROPIC_API_KEY para as leituras de mercado e a auditoria de plano.'),
+      item('Alertas no WhatsApp',Boolean(process.env.WHATSAPP_WEBHOOK_URL),process.env.WHATSAPP_WEBHOOK_URL?'Configurado.':'Sem webhook.','Opcional. Configure WHATSAPP_WEBHOOK_URL para receber alertas fora do app.'),
+    ];
+    return json(res,200,{
+      itens,
+      prontos:itens.filter(x=>x.ok).length,
+      total:itens.length,
+      essenciaisOk:itens.slice(0,5).every(x=>x.ok),
+      peso:limites.estado(),
+      stream:estadoDoStream(),
+      database:banco,marketFeed:'Binance público',app:true,
+      updatedAt:new Date().toISOString(),
+    });
+  }
   try {
     if (pathname === '/api/binance/account' && req.method === 'GET') {
       const account = await signedBinance('/api/v3/account');

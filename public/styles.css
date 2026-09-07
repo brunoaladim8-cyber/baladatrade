@@ -209,3 +209,25 @@ main{margin:0;padding:20px}
 .robo-etiqueta.robo-perigo{background:var(--red);color:#fff}
 tr.robo-perigo{background:#fdf4f4}
 tr.robo-perigo td{font-weight:700}
+
+/* Separadores do menu. Discretos de propósito: eles orientam, não competem
+   com os itens. Quem lê o menu está procurando um botão, não um título. */
+.nav-grupo{display:block;padding:16px 12px 6px;font-size:9px;font-weight:900;letter-spacing:.16em;color:var(--muted);opacity:.65}
+.nav-grupo:first-child{padding-top:4px}
+nav .nav{width:100%}
+
+/* Impedimentos do robô: o que ele não consegue fazer, dito antes de tentar. */
+.robo-impedimentos{border-left:5px solid var(--red);background:#fdf4f4}
+.robo-impedimentos li{margin:6px 0;line-height:1.5}
+.robo-pode{border-left:5px solid var(--green);background:#f2fbf7}
+
+/* Diagnóstico. O que falta fica em âmbar, não em vermelho: falta configurar
+   não é defeito, e tratar os dois igual faz o alarme perder o sentido. */
+.diagnostico{margin-bottom:20px}
+.diag-lista{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:6px}
+.diag-item{border:1px solid var(--line);border-radius:12px;padding:12px 14px;border-left-width:4px}
+.diag-item.ok{border-left-color:var(--green);background:#f7fcfa}
+.diag-item.falta{border-left-color:#e0a800;background:#fffbf0}
+.diag-item b{display:block;font-size:13px;margin-bottom:3px}
+.diag-item span{display:block;color:var(--muted);font-size:12px}
+.diag-item small{display:block;margin-top:7px;color:var(--ink);font-size:11px;line-height:1.5;opacity:.85}

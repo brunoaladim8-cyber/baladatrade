@@ -512,6 +512,20 @@ function pintarPainelRobo(p) {
       : 'Real — bloqueado no servidor';
   }
 
+  // O que impede o robô de trabalhar, dito antes de ele tentar. Sem isto o
+  // Bruno olhava a tela cheia de campos preenchidos sem saber se aquilo ali
+  // faria alguma coisa — e "não pega" quase sempre era uma variável faltando.
+  const caixa = $('#roboImpedimentos'), lista = $('#roboImpedimentosLista');
+  if (caixa && lista) {
+    const itens = p.impedimentos || [];
+    caixa.classList.toggle('hidden', itens.length === 0);
+    caixa.classList.toggle('robo-pode', false);
+    $('#roboImpedimentosTitulo').textContent = itens.length === 1
+      ? 'Uma coisa impede o robô de operar'
+      : `${itens.length} coisas impedem o robô de operar`;
+    lista.innerHTML = itens.map(x => `<li>${esc(x)}</li>`).join('');
+  }
+
   if (p.ultimoResultado) pintarDecisaoRobo(p.ultimoResultado);
 }
 
@@ -673,3 +687,112 @@ $('#roboConferir')?.addEventListener('click', async () => {
 });
 
 document.querySelector('[data-view="robo"]')?.addEventListener('click', carregarPosicoesRobo);
+
+// ============================================================
+// ORGANIZAÇÃO DO MENU — 07/09/2026
+//
+// Pedido do Bruno: "organize todo app, tá tudo muito ruim, não dá pra
+// entender nada."
+//
+// O motivo da bagunça não era estética. São DEZESSEIS telas, e dez delas
+// nascem no index.html enquanto seis se injetam sozinhas pelo JavaScript, cada
+// uma se encaixando no menu com um `.after()` de quem chegou primeiro. A ordem
+// final era o resultado da ordem em que o script rodou — ninguém decidiu.
+//
+// Aqui alguém decide. A lista abaixo é a ordem, e ela responde a pergunta que
+// se faz abrindo o app: "o que eu quero fazer agora?" — operar, olhar o
+// mercado, ver meu dinheiro, treinar, ou ajustar.
+//
+// Quem não está na lista não some: vai para OUTROS. Tela sumida por causa de
+// uma lista desatualizada seria um problema pior do que o que isto resolve.
+// ============================================================
+
+const GRUPOS_DO_MENU = [
+  { titulo: 'OPERAR', views: ['robo', 'spot', 'pro', 'monitor'] },
+  { titulo: 'MERCADO', views: ['radar', 'markets'] },
+  { titulo: 'MEU DINHEIRO', views: ['dashboard', 'holding', 'earn', 'expenses'] },
+  { titulo: 'TREINO E REGISTRO', views: ['paper', 'journal', 'missions', 'risk'] },
+  { titulo: 'AJUSTES', views: ['broker', 'mnq'] },
+];
+
+function organizarMenu() {
+  const nav = document.querySelector('nav');
+  if (!nav) return;
+  const botoes = new Map([...nav.querySelectorAll('.nav')].map(b => [b.dataset.view, b]));
+  if (!botoes.size) return;
+
+  const usados = new Set();
+  const fragmento = document.createDocumentFragment();
+
+  for (const grupo of GRUPOS_DO_MENU) {
+    const presentes = grupo.views.filter(v => botoes.has(v));
+    if (!presentes.length) continue;
+    const titulo = document.createElement('small');
+    titulo.className = 'nav-grupo';
+    titulo.textContent = grupo.titulo;
+    fragmento.append(titulo);
+    for (const view of presentes) { fragmento.append(botoes.get(view)); usados.add(view); }
+  }
+
+  const sobras = [...botoes.entries()].filter(([view]) => !usados.has(view));
+  if (sobras.length) {
+    const titulo = document.createElement('small');
+    titulo.className = 'nav-grupo';
+    titulo.textContent = 'OUTROS';
+    fragmento.append(titulo);
+    for (const [, botao] of sobras) fragmento.append(botao);
+  }
+
+  // Limpa só os separadores antigos; os botões são movidos, não recriados,
+  // então todos os onclick já ligados continuam valendo.
+  nav.querySelectorAll('.nav-grupo').forEach(x => x.remove());
+  nav.append(fragmento);
+}
+
+organizarMenu();
+
+// Uma tela injetada depois (por qualquer código futuro) entra no lugar certo
+// sozinha, em vez de aparecer solta no fim do menu.
+const observadorDoMenu = new MutationObserver(() => {
+  const nav = document.querySelector('nav');
+  if (nav && nav.lastElementChild && nav.lastElementChild.classList.contains('nav')) {
+    const ultimo = nav.lastElementChild.dataset.view;
+    if (ultimo && !nav.querySelector(`.nav-grupo + [data-view="${ultimo}"]`)) organizarMenu();
+  }
+});
+observadorDoMenu.observe(document.querySelector('nav') || document.body, { childList: true });
+
+// ---- DIAGNÓSTICO ----
+// A primeira tela responde primeiro "o que funciona e o que falta". Tela vazia
+// é indistinguível de tela quebrada, e a diferença entre "falta configurar" e
+// "está com defeito" é a única que importa para quem vai consertar.
+
+async function carregarDiagnostico() {
+  const d = await fetch('/api/system/health').then(r => r.json()).catch(() => null);
+  const lista = $('#diagLista'), titulo = $('#diagTitulo');
+  if (!lista) return;
+  if (!d) { titulo.textContent = 'Não consegui conferir o sistema'; lista.innerHTML = ''; return; }
+
+  titulo.textContent = d.essenciaisOk
+    ? `Tudo pronto — ${d.prontos} de ${d.total} itens ativos`
+    : `${d.total - d.prontos} item(ns) faltando para o sistema trabalhar inteiro`;
+  titulo.className = d.essenciaisOk ? 'positive' : '';
+
+  lista.innerHTML = (d.itens || []).map(i => `
+    <div class="diag-item ${i.ok ? 'ok' : 'falta'}">
+      <b>${i.ok ? '✓' : '!'} ${esc(i.nome)}</b>
+      <span>${esc(i.detalhe || '')}</span>
+      ${i.comoResolver ? `<small>${esc(i.comoResolver)}</small>` : ''}
+    </div>`).join('');
+}
+
+$('#diagAtualizar')?.addEventListener('click', carregarDiagnostico);
+
+// O diagnóstico roda ao abrir e de novo assim que a parede de login sai. Antes
+// do login ele responde 401 e a primeira tela ficaria com "não consegui
+// conferir" para sempre — que é justamente o tipo de mensagem sem saída que
+// fez o app parecer quebrado.
+carregarDiagnostico();
+new MutationObserver(() => {
+  if ($('#authWall')?.classList.contains('hidden')) carregarDiagnostico();
+}).observe($('#authWall') || document.body, { attributes: true, attributeFilter: ['class'] });

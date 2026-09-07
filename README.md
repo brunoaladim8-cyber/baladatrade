@@ -159,6 +159,47 @@ ordens abertas na Binance. Só um humano solta depois, em
 | `POST /api/robo/conferir` | Confere as posições na Binance agora |
 | `POST /api/robo/reconciliar` | Reconciliação completa contra a corretora |
 
+## Diagnóstico
+
+A primeira tela abre com o diagnóstico: o que está funcionando, o que falta e
+**como resolver cada coisa**. Tela vazia é indistinguível de tela quebrada, e a
+diferença entre "falta configurar" e "está com defeito" é a única que importa
+para quem vai consertar.
+
+O que falta aparece em âmbar, não em vermelho — falta configurar não é defeito.
+
+## Como testar tudo
+
+```bash
+npm test        # 115 testes: decisão, risco, resultado, limites e menu
+npm run rotas   # bate em todas as rotas e classifica o que responde
+```
+
+O `npm run rotas` separa quatro coisas que costumam ser confundidas:
+
+| | |
+|---|---|
+| ✅ **Funcionam** | respondem 200 sem depender de nada |
+| 🔑 **Precisam de chave** | a rota está certa, falta `BINANCE_API_KEY` |
+| 🗄 **Precisam de banco** | a rota está certa, falta `DATABASE_URL` |
+| ❌ **Quebrados** | erro de verdade, para consertar |
+
+Há também um teste que garante que **nenhuma tela fica órfã no menu**. As telas
+nascem em dois lugares — dez no `index.html` e seis injetadas pelo `app.js` — e
+sem esse teste é fácil criar a décima sétima e não perceber.
+
+## O menu
+
+Dezesseis telas, organizadas por pergunta em vez de por ordem de chegada:
+
+| Grupo | Telas |
+|---|---|
+| **OPERAR** | Robô, Mesa Spot, Central Pro, Monitor |
+| **MERCADO** | Radar 50, Todos os mercados |
+| **MEU DINHEIRO** | Visão geral, Minha holding, Earn, Gastos e resultado |
+| **TREINO E REGISTRO** | Simulador Spot, Diário, Missões, Gestão de risco |
+| **AJUSTES** | Binance, Robô MNQ |
+
 ## Outros recursos
 
 - Dashboard de resultado, acerto, profit factor e disciplina
@@ -183,6 +224,9 @@ APP_PASSWORD=uma-senha-longa
 AUTH_SECRET=outro-segredo-longo
 
 BINANCE_PESO_MAX=6000        # teto de peso por minuto; ele para em 70%
+# Atenção: MAX_ORDER_NOTIONAL abaixo de 5 é ignorado. A Binance recusa ordem
+# Spot abaixo disso, então um teto menor não protegeria — impediria o robô de
+# existir, sem avisar.
 
 BINANCE_API_KEY=...
 BINANCE_API_SECRET=...

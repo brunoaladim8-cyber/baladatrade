@@ -7,7 +7,8 @@ const {PROP_PROFILES,ACCOUNT_RULES,TPT_RULES,LUCID_RULES,riskState,detectSetup,b
 const {ordensDaMesa,resumoDoGuardiao}=require('./guardiao-do-lucro');
 const {simularOrdem,margemParaRisco}=require('./calculadora-de-ordem');
 const {calculateSpotPlan}=require('./spot-engine');
-const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch}=require('./db');
+const {normalizarConfig,escolherCandidato,precosDoTrade,decidir:decidirRobo,CONFIG_PADRAO}=require('./robo');
+const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo}=require('./db');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -475,6 +476,272 @@ function portfolioAlerts(summary){
   return alerts;
 }
 
+// ============================================================
+// O CICLO DO ROBÔ — 07/09/2026
+//
+// Aqui o robô deixa de ser função pura e encosta no dinheiro. Tudo que decide
+// mora em robo.js e é testável sem rede; o que sobra para cá é buscar os
+// números, mandar a ordem e gravar o que aconteceu.
+//
+// A SEQUÊNCIA É DELIBERADA — e é sempre a mesma:
+//
+//   1. o robô está ligado?          (banco, não memória)
+//   2. como está a conta?           (saldo, posições, ordens de hoje)
+//   3. o que o mercado oferece?     (scanner + peneira do Bruno)
+//   4. a conta fecha?               (spot-engine, com taxa e MIN_NOTIONAL)
+//   5. pode?                        (travas de risco)
+//   6. GRAVA a intenção             ← antes de enviar, sempre
+//   7. envia
+//
+// O passo 6 vir ANTES do 7 é o detalhe que evita o pior bug possível. O id da
+// ordem tem índice único no banco: se dois ciclos se atropelarem, o segundo
+// INSERT falha e a segunda ordem nunca chega a existir. A trava fica no banco,
+// não numa variável — variável some quando o processo reinicia.
+// ============================================================
+
+let cicloEmAndamento = false;   // um ciclo por vez. Sem isso, um ciclo lento é
+                                // ultrapassado pelo seguinte e os dois compram.
+let agendador = null;
+let ultimoResultado = null;
+
+/** A config vem do ambiente e o banco pode sobrescrever — menos o modo REAL,
+ *  que exige as duas travas antigas do projeto (ENABLE_LIVE_TRADING e o teto
+ *  de notional). Nenhuma tela deve conseguir ligar dinheiro de verdade
+ *  sozinha: isso continua sendo decisão de quem tem acesso ao servidor. */
+function configDoRobo(doBanco = {}) {
+  const cfg = normalizarConfig({
+    ...doBanco,
+    modo: doBanco.modo || process.env.ROBO_MODO || 'SIMULACAO',
+    notionalMaximo: Number(doBanco.notionalMaximo) || Number(process.env.MAX_ORDER_NOTIONAL || 100),
+  });
+  const podeReal = process.env.ENABLE_LIVE_TRADING === 'true' && process.env.ROBO_PERMITE_REAL === 'true';
+  if (cfg.modo === 'REAL' && !podeReal) cfg.modo = 'TESTNET';
+  // O teto do robô nunca passa o teto global do projeto.
+  cfg.notionalMaximo = Math.min(cfg.notionalMaximo, Number(process.env.MAX_ORDER_NOTIONAL || 100));
+  return cfg;
+}
+
+/** O retrato da conta: quanto tem livre, o que já está comprado e quantas
+ *  ordens saíram hoje. Sem isto o robô decide no escuro.
+ *
+ *  Em SIMULAÇÃO ele usa a carteira do simulador que o projeto já tem. Isso é
+ *  de propósito: dá para ver o robô raciocinando ANTES de existir qualquer
+ *  chave de API no servidor — e um robô que só dá para observar depois de
+ *  entregar a chave da corretora nunca é observado. */
+async function retratoDaConta(modo = 'SIMULACAO') {
+  if (modo === 'SIMULACAO') {
+    const papel = await paperSummary().catch(() => null);
+    const abertos = (papel?.positions || []).filter(p => Number(p.value) >= 5);
+    return {
+      // Sem banco e sem chave, ainda assim 1.000 USDT de mentira: o robô tem
+      // de conseguir mostrar como pensa mesmo numa instalação recém-criada.
+      saldoUsdt: Number(papel?.account?.cash_usdt ?? 1000),
+      paresAbertos: abertos.map(p => p.symbol),
+      posicoesAbertas: abertos.length,
+      abertos,
+      ordensHoje: await ordensDoRoboHoje().catch(() => 0),
+      origem: papel ? 'SIMULADOR' : 'SIMULADOR_SEM_BANCO',
+    };
+  }
+  const conta = await signedBinance('/api/v3/account');
+  const saldos = (conta.balances || []).filter(b => Number(b.free) + Number(b.locked) > 0);
+  const usdt = saldos.find(b => b.asset === 'USDT');
+  const saldoUsdt = usdt ? Number(usdt.free) : 0;
+
+  // Posição aberta = qualquer moeda que não seja stablecoin com valor de pé.
+  // Poeira de 2 dólares não é posição, e contar poeira como posição faz o robô
+  // achar que está cheio e parar de operar sem motivo.
+  const stables = new Set(['USDT', 'USDC', 'BUSD', 'FDUSD', 'TUSD', 'DAI']);
+  const abertos = [];
+  for (const b of saldos) {
+    if (stables.has(b.asset)) continue;
+    const quantidade = Number(b.free) + Number(b.locked);
+    const valor = await assetValueUsdt(b.asset, quantidade).catch(() => 0);
+    if (valor >= 5) abertos.push({ asset: b.asset, simbolo: `${b.asset}USDT`, quantidade, valor });
+  }
+
+  return {
+    saldoUsdt,
+    paresAbertos: abertos.map(x => x.simbolo),
+    posicoesAbertas: abertos.length,
+    abertos,
+    ordensHoje: await ordensDoRoboHoje().catch(() => 0),
+  };
+}
+
+/** Um ciclo completo. `forcado` só ignora o "ligado"; nunca ignora o kill
+ *  switch nem os limites de risco — botão de teste que fura trava de risco
+ *  deixa de ser teste. */
+async function cicloDoRobo({ forcado = false } = {}) {
+  if (cicloEmAndamento) return { acao: 'PARADO', motivo: 'JA_RODANDO', texto: 'O ciclo anterior ainda não terminou. Pulei este para não mandar ordem duplicada.' };
+  cicloEmAndamento = true;
+  const comecou = Date.now();
+
+  try {
+    const salvo = await estadoDoRobo().catch(() => ({ ligado: false, killSwitch: false, config: {} }));
+    const cfg = configDoRobo(salvo.config);
+
+    if (!salvo.ligado && !forcado) {
+      return (ultimoResultado = { acao: 'PARADO', motivo: 'DESLIGADO', texto: 'O robô está desligado. Ligue no painel para ele começar a olhar o mercado.', config: cfg, em: comecou });
+    }
+
+    const conta = await retratoDaConta(cfg.modo);
+    const scan = await setupScanner();
+    const candidatos = scan.setups || [];
+
+    // O plano só existe depois de escolher o par: os filtros (tickSize,
+    // stepSize, MIN_NOTIONAL) são de cada par, e é neles que a conta fecha
+    // ou não fecha.
+    const escolhido = escolherCandidato(candidatos, cfg, conta.paresAbertos);
+    let plano = null;
+    if (escolhido) {
+      const precos = precosDoTrade(escolhido, cfg);
+      if (precos) {
+        const info = await fetch(`${marketBase()}/api/v3/exchangeInfo?symbol=${escolhido.symbol}`, { signal: AbortSignal.timeout(10000) }).then(r => r.json()).catch(() => null);
+        const mercado = info?.symbols?.[0];
+        if (mercado?.status === 'TRADING' && mercado.isSpotTradingAllowed) {
+          // calculateSpotPlan LANÇA quando os números não fecham. Isso não é
+          // falha do ciclo — é o motivo de não operar, e vira ESPERAR logo
+          // abaixo com a explicação do próprio engine.
+          try {
+            plano = calculateSpotPlan({
+              symbol: escolhido.symbol,
+              capital: Math.min(conta.saldoUsdt, cfg.notionalMaximo),
+              riskPct: cfg.riscoPctPorOrdem,
+              entry: precos.entrada, stop: precos.stop, target: precos.alvo,
+              filters: mercado.filters,
+            });
+          } catch (error) {
+            plano = { quantity: 0, allowed: false, blockers: [error.message] };
+          }
+        }
+      }
+    }
+
+    const estado = {
+      ...conta,
+      desligadoManualmente: !salvo.ligado && !forcado,
+      killSwitch: salvo.killSwitch,
+      atrasoDadosMs: Date.now() - new Date(scan.generatedAt).getTime(),
+    };
+
+    const decisao = decidirRobo({ candidatos, estado, config: cfg, plano, agoraMs: Date.now() });
+    decisao.modo = cfg.modo;
+    decisao.duracaoMs = Date.now() - comecou;
+
+    // ---- passo 6: GRAVA ANTES DE ENVIAR ----
+    let linha = null;
+    if (decisao.acao === 'COMPRAR') {
+      linha = await salvarDecisao({
+        acao: decisao.acao, motivo: decisao.motivo, texto: decisao.texto,
+        simbolo: decisao.simbolo, modo: cfg.modo, quantidade: decisao.quantidade,
+        entrada: Number(decisao.ordem.workingPrice), stop: Number(decisao.ordem.pendingBelowStopPrice),
+        alvo: Number(decisao.ordem.pendingAbovePrice), notional: decisao.notional,
+        riscoUsdt: decisao.riscoUsdt, ordemId: decisao.id, enviado: false,
+        payload: { candidato: decisao.candidato, ordem: decisao.ordem },
+      }).catch(() => null);
+
+      if (linha === null) {
+        // O id já estava no banco: outro ciclo (ou uma tentativa anterior que
+        // deu timeout) já cuidou deste trade. Não mandar é o comportamento
+        // certo — duplicar posição é pior do que perder uma entrada.
+        decisao.acao = 'ESPERAR';
+        decisao.motivo = 'JA_DECIDIDO';
+        decisao.texto = `${decisao.simbolo}: esta ordem já foi registrada neste minuto. Não vou mandar de novo.`;
+        linha = null;
+      } else if (linha?.semBanco) {
+        // Sem PostgreSQL não existe índice único, e sem índice único não
+        // existe proteção contra mandar a mesma ordem duas vezes. Em
+        // simulação isso é inofensivo (nada é enviado) e o robô continua
+        // mostrando como pensa; com dinheiro em jogo, ele para e diz por quê.
+        if (cfg.modo === 'SIMULACAO') {
+          decisao.semBanco = true;
+        } else {
+          decisao.acao = 'PARADO';
+          decisao.motivo = 'SEM_BANCO';
+          decisao.texto = 'O PostgreSQL não está configurado. Sem ele não há registro nem proteção contra ordem duplicada, e eu não mando ordem sem as duas.';
+          linha = null;
+        }
+      }
+    } else {
+      await salvarDecisao({ acao: decisao.acao, motivo: decisao.motivo, texto: decisao.texto, simbolo: decisao.simbolo || null, modo: cfg.modo, enviado: false, payload: { travas: decisao.travas || [] } }).catch(() => null);
+    }
+
+    // ---- passo 7: envia ----
+    if (decisao.acao === 'COMPRAR' && (linha || decisao.semBanco)) {
+      if (cfg.modo === 'SIMULACAO') {
+        decisao.enviado = false;
+        decisao.texto += ' (SIMULAÇÃO — nenhuma ordem foi enviada.)';
+      } else {
+        try {
+          const resposta = await signedBinance('/api/v3/orderList/otoco', 'POST', decisao.ordem);
+          decisao.enviado = true;
+          decisao.resposta = resposta;
+          if (linha?.id) await marcarDecisaoEnviada(linha.id, true, null, { ordem: decisao.ordem, resposta });
+          await saveAlerts([{
+            kind: 'robo', level: 'info', symbol: decisao.simbolo,
+            title: `Robô comprou ${decisao.simbolo}`, message: decisao.texto,
+            fingerprint: `robo-${decisao.id}`, payload: { ordem: decisao.ordem, resposta },
+          }]).catch(() => {});
+        } catch (error) {
+          // Timeout NÃO é falha: é status desconhecido. Por isso a consulta por
+          // origClientOrderId antes de qualquer conclusão — a ordem pode ter
+          // entrado mesmo com a resposta perdida no caminho.
+          const conferida = await signedBinance('/api/v3/order', 'GET', { symbol: decisao.simbolo, origClientOrderId: `${decisao.id}e` }).catch(() => null);
+          const entrou = Boolean(conferida?.orderId);
+          decisao.enviado = entrou;
+          decisao.erro = entrou
+            ? `A resposta se perdeu, mas a ordem ENTROU (${conferida.status}). Não reenviei.`
+            : error.message;
+          if (linha?.id) await marcarDecisaoEnviada(linha.id, entrou, decisao.erro, { ordem: decisao.ordem, conferida });
+        }
+      }
+    }
+
+    await salvarEstadoDoRobo({ ultimoCiclo: new Date().toISOString() }).catch(() => {});
+    return (ultimoResultado = decisao);
+  } catch (error) {
+    const falha = { acao: 'ERRO', motivo: 'FALHA_NO_CICLO', texto: error.message, em: comecou, duracaoMs: Date.now() - comecou };
+    await salvarDecisao({ acao: 'ERRO', motivo: 'FALHA_NO_CICLO', texto: error.message, modo: 'DESCONHECIDO', enviado: false, payload: {} }).catch(() => {});
+    return (ultimoResultado = falha);
+  } finally {
+    cicloEmAndamento = false;
+  }
+}
+
+/** Liga o relógio. Um `setInterval` só, guardado numa variável, para religar
+ *  não criar dois agendadores mandando ordem em dobro. */
+function ligarAgendador(segundos) {
+  if (agendador) clearInterval(agendador);
+  const intervalo = Math.max(30, Number(segundos) || 60) * 1000;
+  agendador = setInterval(() => { cicloDoRobo().catch(error => console.error('Robô:', error.message)); }, intervalo);
+  if (agendador.unref) agendador.unref();
+  return intervalo;
+}
+
+function pararAgendador() {
+  if (agendador) clearInterval(agendador);
+  agendador = null;
+}
+
+/** O painel: o que ele é, o que ele fez e por quê. */
+async function painelDoRobo() {
+  const salvo = await estadoDoRobo().catch(() => ({ ligado: false, killSwitch: false, config: {}, ultimoCiclo: null, semBanco: true }));
+  const cfg = configDoRobo(salvo.config);
+  return {
+    ligado: salvo.ligado,
+    killSwitch: salvo.killSwitch,
+    agendadorAtivo: Boolean(agendador),
+    modo: cfg.modo,
+    modoRealPermitido: process.env.ENABLE_LIVE_TRADING === 'true' && process.env.ROBO_PERMITE_REAL === 'true',
+    config: cfg,
+    ultimoCiclo: salvo.ultimoCiclo,
+    ultimoResultado,
+    protecao: 'Entrada, stop e alvo saem juntos num OTOCO. Depois que a entrada preenche, o stop e o alvo vivem dentro da Binance — se o robô cair, eles continuam de pé.',
+    atualizadoEm: new Date().toISOString(),
+  };
+}
+
 async function api(req, res, pathname) {
   if (pathname === '/api/auth/session') return json(res, 200, {authenticated:authorized(req)});
   if (pathname === '/api/auth/login' && req.method === 'POST') {
@@ -573,6 +840,51 @@ async function api(req, res, pathname) {
       const desvioPct=precoAgora?(Number(data.entry)/precoAgora-1)*100:null;
       const contexto={precoAgora,desvioPct,esticada:desvioPct!==null&&desvioPct>1.5,abaixoDoMercado:desvioPct!==null&&desvioPct<-1.5};
       return json(res,200,{plan,contexto,market:{baseAsset:market.baseAsset,quoteAsset:market.quoteAsset,status:market.status},updatedAt:new Date().toISOString()});
+    }
+    // ---- ROBÔ ----
+    if (pathname === '/api/robo/estado' && req.method === 'GET') return json(res,200,await painelDoRobo());
+    if (pathname === '/api/robo/historico' && req.method === 'GET') return json(res,200,{decisoes:await decisoesDoRobo(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50))});
+    if (pathname === '/api/robo/ciclo' && req.method === 'POST') return json(res,200,{decisao:await cicloDoRobo({forcado:true}),painel:await painelDoRobo()});
+    if (pathname === '/api/robo/config' && req.method === 'POST') {
+      const dados=await body(req),cfg=normalizarConfig(dados.config||dados);
+      await salvarEstadoDoRobo({config:cfg});
+      if(agendador)ligarAgendador(cfg.intervaloSegundos);
+      return json(res,200,{ok:true,painel:await painelDoRobo()});
+    }
+    if (pathname === '/api/robo/ligar' && req.method === 'POST') {
+      const salvo=await estadoDoRobo();
+      if(salvo.killSwitch)return json(res,403,{error:'O kill switch está acionado. Solte o kill switch antes de ligar.'});
+      const cfg=configDoRobo(salvo.config);
+      // Ligar em REAL exige confirmação explícita no cabeçalho, igual à ordem
+      // manual. Um clique distraído no painel não pode virar dinheiro de
+      // verdade — é a mesma trava que já protegia /api/binance/order.
+      if(cfg.modo==='REAL'&&req.headers['x-confirm-live']!=='CONFIRMAR-ROBO-REAL')return json(res,403,{error:'Robô em modo REAL exige o cabeçalho de confirmação.'});
+      await salvarEstadoDoRobo({ligado:true});
+      ligarAgendador(cfg.intervaloSegundos);
+      return json(res,200,{ok:true,painel:await painelDoRobo()});
+    }
+    if (pathname === '/api/robo/desligar' && req.method === 'POST') {
+      pararAgendador();
+      await salvarEstadoDoRobo({ligado:false});
+      return json(res,200,{ok:true,painel:await painelDoRobo()});
+    }
+    // O BOTÃO VERMELHO. Desliga, trava o religamento e cancela TODAS as ordens
+    // abertas dos pares que o robô tocou. Só um humano solta depois.
+    if (pathname === '/api/robo/panico' && req.method === 'POST') {
+      pararAgendador();
+      await salvarEstadoDoRobo({ligado:false,killSwitch:true});
+      const abertas=await signedBinance('/api/v3/openOrders').catch(()=>[]);
+      const pares=[...new Set((Array.isArray(abertas)?abertas:[]).map(o=>o.symbol))];
+      const canceladas=[];
+      for(const par of pares){
+        const r=await signedBinance('/api/v3/openOrders','DELETE',{symbol:par}).catch(error=>({erro:error.message}));
+        canceladas.push({simbolo:par,resultado:r});
+      }
+      return json(res,200,{ok:true,canceladas,painel:await painelDoRobo()});
+    }
+    if (pathname === '/api/robo/soltar-panico' && req.method === 'POST') {
+      await salvarEstadoDoRobo({killSwitch:false});
+      return json(res,200,{ok:true,painel:await painelDoRobo()});
     }
     if (pathname === '/api/earn/overview' && req.method === 'GET') return json(res,200,await earnOverview());
     if (pathname === '/api/market/setups' && req.method === 'GET') return json(res,200,await setupScanner());
@@ -695,6 +1007,23 @@ if (require.main === module) {
   http.createServer(handler).listen(port, '0.0.0.0', () => {
     console.log(`BaladaTrade ativo na porta ${port}`);
   });
-  initDatabase().then(ok=>console.log(ok?'PostgreSQL conectado':'PostgreSQL não configurado')).catch(error=>console.error('Falha PostgreSQL:',error.message));
+  initDatabase().then(async ok=>{
+    console.log(ok?'PostgreSQL conectado':'PostgreSQL não configurado');
+    if(!ok)return;
+    // O robô volta do jeito que estava. O Railway reinicia sozinho (deploy,
+    // troca de máquina, falta de memória) e um robô que não volta é um robô
+    // que só parece estar cuidando da conta.
+    //
+    // Volta APENAS se estava ligado e sem kill switch — reinício não pode
+    // desfazer um desligamento que o Bruno fez de propósito.
+    const salvo=await estadoDoRobo().catch(()=>null);
+    if(salvo?.ligado&&!salvo.killSwitch){
+      const cfg=configDoRobo(salvo.config);
+      ligarAgendador(cfg.intervaloSegundos);
+      console.log(`Robô religado em modo ${cfg.modo}, ciclo de ${cfg.intervaloSegundos}s`);
+    }else{
+      console.log('Robô desligado. Ligue em /api/robo/ligar quando quiser.');
+    }
+  }).catch(error=>console.error('Falha PostgreSQL:',error.message));
 }
 module.exports = {handler,leituraDaMesa,peneira};

@@ -465,3 +465,139 @@ function renderGuardiao(ordens, resumo){
       ${o.lucroAtual!==undefined?`<p class="gd-lucro">${o.lucroAtual>=0?'Lucro aberto':'Prejuízo aberto'}: <b>${num(o.lucroAtual,2)} ${esc(o.moeda||'')}</b>${o.devolucao>0?` · devolveu ${num(o.devolucao,1)}%`:''}</p>`:''}
     </article>`).join('');
 }
+
+// ============================================================
+// PAINEL DO ROBÔ — 07/09/2026
+//
+// A tela do robô tem uma obrigação acima de todas: dizer O QUE ELE FEZ E POR
+// QUÊ, inclusive quando não fez nada. Um robô silencioso é indistinguível de
+// um robô quebrado, e o Bruno não pode descobrir a diferença pelo extrato.
+// ============================================================
+
+const roboCampos = {
+  modo: '#roboModoSel', notionalMaximo: '#roboNotional', riscoPctPorOrdem: '#roboRisco',
+  alvoEmR: '#roboAlvo', stopEmAtr: '#roboStop', maxPosicoes: '#roboMaxPos',
+  maxOrdensPorDia: '#roboMaxOrdens', perdaMaximaDiaUsdt: '#roboPerdaDia', intervaloSegundos: '#roboIntervaloSeg',
+};
+
+function pintarPainelRobo(p) {
+  if (!p) return;
+  const ligado = p.ligado && !p.killSwitch;
+  $('#roboEstado').textContent = p.killSwitch ? 'PARADO' : ligado ? 'LIGADO' : 'DESLIGADO';
+  $('#roboEstadoHint').textContent = p.killSwitch
+    ? 'Kill switch acionado — só você solta'
+    : ligado ? 'Olhando o mercado sozinho' : 'Não está olhando nada';
+  $('#roboLigar').textContent = ligado ? 'Desligar robô' : 'Ligar robô';
+  $('#roboModo').textContent = p.modo || '—';
+  $('#roboModoHint').textContent = p.modo === 'SIMULACAO'
+    ? 'Decide e registra, não envia ordem'
+    : p.modo === 'TESTNET' ? 'Envia de verdade, com dinheiro falso'
+    : 'DINHEIRO DE VERDADE';
+  $('#roboUltimo').textContent = p.ultimoCiclo ? new Date(p.ultimoCiclo).toLocaleTimeString('pt-BR') : '—';
+  $('#roboIntervalo').textContent = `A cada ${p.config?.intervaloSegundos || 60}s`;
+  $('#roboTeto').textContent = `${number(p.config?.notionalMaximo || 0, 2)} USDT`;
+
+  for (const [campo, seletor] of Object.entries(roboCampos)) {
+    const el = $(seletor);
+    if (el && p.config?.[campo] !== undefined) el.value = p.config[campo];
+  }
+
+  // Modo Real desabilitado quando o servidor não permite: melhor a opção não
+  // existir do que existir e falhar em silêncio na hora de ligar.
+  const opcaoReal = $('#roboModoSel')?.querySelector('option[value="REAL"]');
+  if (opcaoReal) {
+    opcaoReal.disabled = !p.modoRealPermitido;
+    opcaoReal.textContent = p.modoRealPermitido
+      ? 'Real — dinheiro de verdade'
+      : 'Real — bloqueado no servidor';
+  }
+
+  if (p.ultimoResultado) pintarDecisaoRobo(p.ultimoResultado);
+}
+
+function pintarDecisaoRobo(d) {
+  if (!d) return;
+  const rotulo = { COMPRAR: 'Comprou', ESPERAR: 'Esperou', PARADO: 'Parado', ERRO: 'Erro' };
+  $('#roboAcao').textContent = rotulo[d.acao] || d.acao || '—';
+  $('#roboMotivo').textContent = d.motivo || '—';
+  $('#roboTexto').textContent = d.texto || '';
+  const painel = document.querySelector('.robo-decisao');
+  if (painel) painel.dataset.acao = d.acao || '';
+}
+
+async function carregarRobo() {
+  const p = await fetch('/api/robo/estado').then(r => r.json()).catch(() => null);
+  pintarPainelRobo(p);
+}
+
+async function carregarHistoricoRobo() {
+  const dados = await fetch('/api/robo/historico?limit=50').then(r => r.json()).catch(() => ({ decisoes: [] }));
+  const linhas = dados.decisoes || [];
+  $('#roboTabelaVazia').classList.toggle('hidden', linhas.length > 0);
+  $('#roboTabela').innerHTML = linhas.map(d => `
+    <tr>
+      <td>${new Date(d.criado_em).toLocaleString('pt-BR')}</td>
+      <td><b>${esc(d.acao)}</b></td>
+      <td>${esc(d.simbolo || '—')}</td>
+      <td>${esc(d.motivo)}</td>
+      <td>${esc(d.modo)}</td>
+      <td>${d.enviado ? 'Sim' : d.erro ? 'Falhou' : 'Não'}</td>
+      <td class="robo-explica">${esc(d.erro || d.texto)}</td>
+    </tr>`).join('');
+}
+
+$('#roboLigar')?.addEventListener('click', async () => {
+  const botao = $('#roboLigar'), desligando = botao.textContent.startsWith('Desligar');
+  botao.disabled = true;
+  const rota = desligando ? '/api/robo/desligar' : '/api/robo/ligar';
+  const cabecalhos = { 'content-type': 'application/json' };
+  // Ligar em Real exige a confirmação explícita, igual à ordem manual.
+  if (!desligando && $('#roboModoSel').value === 'REAL') cabecalhos['x-confirm-live'] = 'CONFIRMAR-ROBO-REAL';
+  const r = await fetch(rota, { method: 'POST', headers: cabecalhos }).then(x => x.json()).catch(() => null);
+  botao.disabled = false;
+  if (r?.error) { $('#roboTexto').textContent = r.error; return; }
+  pintarPainelRobo(r?.painel);
+});
+
+$('#roboCiclo')?.addEventListener('click', async () => {
+  const botao = $('#roboCiclo');
+  botao.disabled = true; botao.textContent = 'Analisando…';
+  const r = await fetch('/api/robo/ciclo', { method: 'POST' }).then(x => x.json()).catch(() => null);
+  botao.disabled = false; botao.textContent = 'Rodar um ciclo agora';
+  if (r?.decisao) pintarDecisaoRobo(r.decisao);
+  pintarPainelRobo(r?.painel);
+  carregarHistoricoRobo();
+});
+
+$('#roboForm')?.addEventListener('submit', async e => {
+  e.preventDefault();
+  const config = Object.fromEntries(Object.entries(roboCampos).map(([campo, seletor]) => {
+    const valor = $(seletor).value;
+    return [campo, campo === 'modo' ? valor : Number(valor)];
+  }));
+  $('#roboConfigResult').textContent = 'Salvando…';
+  const r = await fetch('/api/robo/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ config }) }).then(x => x.json()).catch(() => null);
+  $('#roboConfigResult').textContent = r?.ok ? 'Limites salvos. Valem já no próximo ciclo.' : (r?.error || 'Falha ao salvar.');
+  pintarPainelRobo(r?.painel);
+});
+
+$('#roboPanico')?.addEventListener('click', async () => {
+  if (!confirm('Isso desliga o robô e CANCELA todas as ordens abertas na Binance. Confirma?')) return;
+  $('#roboPanicoResult').textContent = 'Cancelando…';
+  const r = await fetch('/api/robo/panico', { method: 'POST' }).then(x => x.json()).catch(() => null);
+  $('#roboPanicoResult').textContent = r?.ok
+    ? `Robô parado. Ordens canceladas em ${(r.canceladas || []).length} par(es). Solte o kill switch quando quiser voltar.`
+    : (r?.error || 'Falha ao parar.');
+  pintarPainelRobo(r?.painel);
+});
+
+$('#roboHistorico')?.addEventListener('click', carregarHistoricoRobo);
+
+// Quando a aba do robô abre, ela se atualiza sozinha. Painel de robô com dado
+// velho é pior do que painel nenhum: dá a sensação de que está tudo certo.
+let relogioRobo = null;
+document.querySelector('[data-view="robo"]')?.addEventListener('click', () => {
+  carregarRobo(); carregarHistoricoRobo();
+  if (relogioRobo) clearInterval(relogioRobo);
+  relogioRobo = setInterval(carregarRobo, 15000);
+});

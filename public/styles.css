@@ -184,3 +184,18 @@ main{margin:0;padding:20px}
 .gd-baixa .gd-titulo { color: #b8c6d6; font-weight: 700; font-size: 16px; }
 
 .gd-vazio { color: #7d8da3; font-size: 14px; padding: 10px 2px; }
+
+/* ROBÔ — 07/09/2026. A decisão do ciclo é a informação mais importante da
+   tela, então ela ganha a faixa de cor: verde quando comprou, cinza quando
+   esperou, vermelho quando travou ou quebrou. Cor aqui não é enfeite — é o
+   que se lê de longe, com o celular na mão. */
+.robo-decisao{border-left:5px solid var(--line)}
+.robo-decisao[data-acao="COMPRAR"]{border-left-color:var(--green);background:linear-gradient(90deg,#f2fbf7,#fff 40%)}
+.robo-decisao[data-acao="ESPERAR"]{border-left-color:var(--muted)}
+.robo-decisao[data-acao="PARADO"]{border-left-color:var(--red);background:linear-gradient(90deg,#fdf4f4,#fff 40%)}
+.robo-decisao[data-acao="ERRO"]{border-left-color:var(--red)}
+.robo-decisao h3{margin:0;font-size:24px}
+.robo-decisao p{margin-top:10px;font-size:15px;line-height:1.6}
+.robo-explica{max-width:420px;color:var(--muted);font-size:13px}
+#roboPanico{background:var(--red);color:#fff;margin-top:12px}
+#roboEstado[data-x]{letter-spacing:.04em}

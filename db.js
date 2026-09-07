@@ -152,7 +152,114 @@ async function initDatabase(){
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS position_watches_active_idx ON position_watches(status,updated_at DESC);
+
+    -- ROBÔ — 07/09/2026
+    -- Toda decisão fica gravada, inclusive as de NÃO operar. Robô que só
+    -- registra o que comprou é impossível de auditar: quando ele passa um dia
+    -- parado não dá para saber se foi disciplina ou defeito.
+    CREATE TABLE IF NOT EXISTS robo_decisoes (
+      id BIGSERIAL PRIMARY KEY,
+      acao VARCHAR(12) NOT NULL,
+      motivo VARCHAR(32) NOT NULL,
+      texto TEXT NOT NULL,
+      simbolo VARCHAR(24),
+      modo VARCHAR(12) NOT NULL,
+      quantidade NUMERIC(36,18),
+      entrada NUMERIC(30,12),
+      stop NUMERIC(30,12),
+      alvo NUMERIC(30,12),
+      notional NUMERIC(30,12),
+      risco_usdt NUMERIC(30,12),
+      ordem_id VARCHAR(48),
+      enviado BOOLEAN NOT NULL DEFAULT FALSE,
+      erro TEXT,
+      payload JSONB,
+      criado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS robo_decisoes_idx ON robo_decisoes(criado_em DESC);
+    -- O id da ordem é único no banco: mesmo que dois ciclos se atropelem, o
+    -- segundo INSERT falha e nenhuma ordem sai duas vezes. Esta é a trava que
+    -- protege ANTES de a requisição chegar na Binance.
+    CREATE UNIQUE INDEX IF NOT EXISTS robo_decisoes_ordem_idx ON robo_decisoes(ordem_id) WHERE ordem_id IS NOT NULL;
+
+    -- Uma linha só, que guarda se o robô está ligado e como. Fica no banco e
+    -- não em memória de propósito: reinício do Railway não pode religar
+    -- sozinho um robô que o Bruno desligou.
+    CREATE TABLE IF NOT EXISTS robo_estado (
+      id INT PRIMARY KEY DEFAULT 1 CHECK(id=1),
+      ligado BOOLEAN NOT NULL DEFAULT FALSE,
+      kill_switch BOOLEAN NOT NULL DEFAULT FALSE,
+      config JSONB NOT NULL DEFAULT '{}'::jsonb,
+      ultimo_ciclo TIMESTAMPTZ,
+      atualizado_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO robo_estado(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
   `);return true;
+}
+
+// ------------------------------------------------------------
+// ROBÔ — persistência
+// ------------------------------------------------------------
+
+/** Grava a decisão do ciclo. Três respostas, e as três são diferentes:
+ *
+ *    {id,criado_em}   gravou
+ *    null             o id JÁ EXISTE → outro ciclo já cuidou deste trade
+ *    {semBanco:true}  não há banco configurado
+ *
+ *  Separar as duas últimas é obrigatório. Tratar "sem banco" como "duplicada"
+ *  faz o robô recusar todo trade dizendo que já mandou — e tratar como "ok"
+ *  é pior ainda: manda ordem sem nenhuma proteção contra duplicar. */
+async function salvarDecisao(d){
+  const db=database();if(!db)return {semBanco:true};
+  try{
+    const r=await db.query(`INSERT INTO robo_decisoes(acao,motivo,texto,simbolo,modo,quantidade,entrada,stop,alvo,notional,risco_usdt,ordem_id,enviado,erro,payload)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id,criado_em`,
+      [d.acao,d.motivo,d.texto,d.simbolo||null,d.modo,d.quantidade||null,d.entrada||null,d.stop||null,d.alvo||null,d.notional||null,d.riscoUsdt||null,d.ordemId||null,Boolean(d.enviado),d.erro||null,d.payload||{}]);
+    return r.rows[0];
+  }catch(error){
+    if(error.code==='23505')return null; // id repetido: alguém já mandou esta
+    throw error;
+  }
+}
+
+async function marcarDecisaoEnviada(id,enviado,erro,payload){
+  const db=database();if(!db)return;
+  await db.query('UPDATE robo_decisoes SET enviado=$2,erro=$3,payload=COALESCE($4,payload) WHERE id=$1',[id,Boolean(enviado),erro||null,payload||null]);
+}
+
+async function decisoesDoRobo(limit=50){
+  const db=database();if(!db)throw new Error('Banco de dados não configurado.');
+  return (await db.query(`SELECT id,acao,motivo,texto,simbolo,modo,quantidade::float8,entrada::float8,stop::float8,alvo::float8,notional::float8,risco_usdt::float8,ordem_id,enviado,erro,criado_em FROM robo_decisoes ORDER BY criado_em DESC LIMIT $1`,[Math.min(Math.max(limit,1),500)])).rows;
+}
+
+/** Quantas ordens o robô já mandou hoje. É o freio contra loop: sem esta
+ *  contagem, um bug no agendador manda ordem até acabar o saldo. */
+async function ordensDoRoboHoje(){
+  const db=database();if(!db)return 0;
+  const r=await db.query(`SELECT COUNT(*)::int AS n FROM robo_decisoes WHERE enviado=TRUE AND criado_em >= date_trunc('day',NOW())`);
+  return r.rows[0]?.n||0;
+}
+
+async function estadoDoRobo(){
+  const db=database();if(!db)return {ligado:false,killSwitch:false,config:{},ultimoCiclo:null,semBanco:true};
+  const r=await db.query('SELECT ligado,kill_switch,config,ultimo_ciclo FROM robo_estado WHERE id=1');
+  const row=r.rows[0]||{};
+  return {ligado:Boolean(row.ligado),killSwitch:Boolean(row.kill_switch),config:row.config||{},ultimoCiclo:row.ultimo_ciclo||null,semBanco:false};
+}
+
+async function salvarEstadoDoRobo({ligado,killSwitch,config,ultimoCiclo}){
+  const db=database();if(!db)return null;
+  const r=await db.query(`UPDATE robo_estado SET
+      ligado=COALESCE($1,ligado),
+      kill_switch=COALESCE($2,kill_switch),
+      config=COALESCE($3,config),
+      ultimo_ciclo=COALESCE($4,ultimo_ciclo),
+      atualizado_em=NOW()
+    WHERE id=1 RETURNING ligado,kill_switch,config,ultimo_ciclo`,
+    [ligado===undefined?null:Boolean(ligado),killSwitch===undefined?null:Boolean(killSwitch),config?JSON.stringify(config):null,ultimoCiclo||null]);
+  const row=r.rows[0]||{};
+  return {ligado:Boolean(row.ligado),killSwitch:Boolean(row.kill_switch),config:row.config||{},ultimoCiclo:row.ultimo_ciclo||null};
 }
 
 async function saveMarketScan(scan){const db=database();if(!db)return null;const result=await db.query(`INSERT INTO market_scans(symbol,price,change_24h,high_24h,low_24h,amplitude_pct,range_position_pct,risk_score,alignment,spread_pct,book_imbalance_pct,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,captured_at`,[scan.symbol,scan.price,scan.change24h,scan.high,scan.low,scan.amplitude,scan.rangePosition,scan.risk.score,scan.alignment,scan.orderBook.spreadPct,scan.orderBook.imbalancePct,scan]);return result.rows[0]}
@@ -260,4 +367,4 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch};
+module.exports={initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo};

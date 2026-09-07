@@ -21,6 +21,7 @@
     <a class="brand" href="#"><span>BT</span> BaladaTrade</a>
     <nav>
       <button class="nav active" data-view="dashboard">◫ <span>Visão geral</span></button>
+      <button class="nav" data-view="robo">⚙ <span>Robô</span></button>
       <button class="nav" data-view="holding">◉ <span>Minha holding</span></button>
       <button class="nav" data-view="radar">⌁ <span>Radar 50</span></button>
       <button class="nav" data-view="markets">⌗ <span>Todos os mercados</span></button>
@@ -61,6 +62,51 @@
       </div>
     </section>
 
+    <section id="robo" class="view">
+      <div class="section-head">
+        <div><p class="eyebrow">EXECUÇÃO AUTOMÁTICA · SPOT</p><h2>O robô</h2><p class="muted">Ele olha o mercado sozinho, aplica a sua peneira e manda entrada, stop e alvo numa única ordem. Depois que a entrada preenche, o stop e o alvo vivem dentro da Binance.</p></div>
+        <div class="header-actions"><button class="secondary" id="roboCiclo">Rodar um ciclo agora</button><button class="primary" id="roboLigar">Ligar robô</button></div>
+      </div>
+      <div class="metrics">
+        <article><small>ESTADO</small><strong id="roboEstado">—</strong><span id="roboEstadoHint">Carregando…</span></article>
+        <article><small>MODO</small><strong id="roboModo">—</strong><span id="roboModoHint">Simulação não envia ordem</span></article>
+        <article><small>ÚLTIMO CICLO</small><strong id="roboUltimo">—</strong><span id="roboIntervalo">—</span></article>
+        <article><small>TETO POR ORDEM</small><strong id="roboTeto">—</strong><span>Nunca passa disso</span></article>
+      </div>
+      <article class="panel robo-decisao">
+        <div class="panel-head"><div><small>O QUE ELE DECIDIU AGORA</small><h3 id="roboAcao">Aguardando</h3></div><span class="tag" id="roboMotivo">—</span></div>
+        <p id="roboTexto" class="muted">Ligue o robô ou rode um ciclo para ver a decisão e o motivo dela.</p>
+      </article>
+      <div class="risk-grid">
+        <form id="roboForm" class="panel form">
+          <span class="tag">LIMITES</span>
+          <label>Modo<select id="roboModoSel"><option value="SIMULACAO">Simulação — decide e registra, não envia</option><option value="TESTNET">Testnet — envia de verdade, dinheiro falso</option><option value="REAL">Real — dinheiro de verdade</option></select></label>
+          <label>Teto por ordem (USDT)<input id="roboNotional" type="number" min="5" step="any" value="100" required></label>
+          <label>Risco por ordem (%)<input id="roboRisco" type="number" min="0.1" max="5" step="0.1" value="1" required></label>
+          <label>Alvo em múltiplos de R<input id="roboAlvo" type="number" min="1.5" max="10" step="0.5" value="2" required></label>
+          <label>Stop em múltiplos de ATR<input id="roboStop" type="number" min="0.5" max="5" step="0.1" value="1.5" required></label>
+          <label>Máximo de posições abertas<input id="roboMaxPos" type="number" min="1" max="20" value="3" required></label>
+          <label>Máximo de ordens por dia<input id="roboMaxOrdens" type="number" min="1" max="100" value="6" required></label>
+          <label>Perda máxima do dia (USDT, 0 = desligado)<input id="roboPerdaDia" type="number" min="0" step="any" value="0" required></label>
+          <label>Intervalo entre ciclos (segundos)<input id="roboIntervaloSeg" type="number" min="30" max="3600" value="60" required></label>
+          <button class="primary" type="submit">Salvar limites</button>
+          <p id="roboConfigResult" class="muted">Os limites valem no ciclo seguinte.</p>
+        </form>
+        <article class="panel">
+          <div class="panel-head"><div><small>PARADA DE EMERGÊNCIA</small><h3>Botão vermelho</h3></div></div>
+          <p class="muted">Desliga o robô, trava o religamento e cancela todas as ordens abertas na Binance. Depois disso só você solta — de propósito.</p>
+          <button class="secondary" id="roboPanico">Parar tudo e cancelar ordens</button>
+          <p id="roboPanicoResult" class="muted"></p>
+          <hr>
+          <p class="muted">Para ligar em modo <b>Real</b> o servidor precisa de <code>ENABLE_LIVE_TRADING=true</code> e <code>ROBO_PERMITE_REAL=true</code>. Sem as duas, o robô cai sozinho para Testnet.</p>
+        </article>
+      </div>
+      <article class="panel table-wrap">
+        <div class="panel-head"><div><small>HISTÓRICO</small><h3>Toda decisão, inclusive as de não operar</h3></div><button class="link" id="roboHistorico">Atualizar</button></div>
+        <table><thead><tr><th>Quando</th><th>Ação</th><th>Par</th><th>Motivo</th><th>Modo</th><th>Enviada?</th><th>Explicação</th></tr></thead><tbody id="roboTabela"></tbody></table>
+        <div id="roboTabelaVazia" class="empty">Nenhuma decisão registrada ainda.</div>
+      </article>
+    </section>
     <section id="holding" class="view"><div class="section-head"><div><p class="eyebrow">BINANCE · SOMENTE LEITURA</p><h2>Patrimônio completo</h2><p class="muted">Spot, Earn flexível, Earn bloqueado e Funding consolidados no PostgreSQL.</p></div><button class="primary" id="refreshHolding">Atualizar tudo</button></div><div class="metrics"><article><small>PATRIMÔNIO</small><strong id="holdingTotal">—</strong><span>Em USDT</span></article><article><small>VARIAÇÃO 24H</small><strong id="holdingChange">—</strong><span id="holdingChangeValue">Aguardando atualização</span></article><article><small>ATIVOS</small><strong id="holdingAssets">0</strong><span>Todos com saldo</span></article><article><small>ÚLTIMA LEITURA</small><strong id="holdingTime">—</strong><span>Snapshot no banco</span></article></div><article class="panel history-panel"><div class="panel-head"><div><small>HISTÓRICO</small><h3>Evolução do patrimônio</h3></div><strong id="historyDelta">—</strong></div><canvas id="portfolioHistory" width="900" height="240"></canvas><div id="historyEmpty" class="empty">São necessárias duas leituras para formar o gráfico.</div></article><div class="wallet-summary" id="walletSummary"></div><div class="grid-main"><article class="panel"><div class="panel-head"><div><small>COMPOSIÇÃO</small><h3>Todos os ativos encontrados</h3></div><span class="tag">SEM CORTE</span></div><div id="holdingList" class="holding-list"><div class="empty">Clique em Atualizar tudo.</div></div></article><article class="panel"><small>ALERTAS E COBERTURA</small><h3>Atenção necessária</h3><div id="holdingAlerts"><div class="empty">Nenhum alerta calculado.</div></div><div id="walletWarnings"></div></article></div></section>
 
     <section id="radar" class="view"><div class="section-head"><div><p class="eyebrow">SPOT E MARGEM · USDT</p><h2>Radar de 50 moedas</h2><p class="muted">Força, volume e pares elegíveis para Cross 5x ou Isolated 10x.</p></div><div class="header-actions"><button class="secondary" id="analyzeMarket">Analisar com Claude</button><button class="primary" id="refreshRadar">Atualizar radar</button></div></div><article class="panel radar-filters"><div><small>FILTRAR ALAVANCAGEM</small><h3>Pares disponíveis sem procurar na Binance</h3></div><label>Modo<select id="marginFilter"><option value="all">Todos</option><option value="10">Isolated até 10x</option><option value="5">Cross até 5x</option><option value="spot">Somente Spot</option></select></label><p class="muted">“Até” é o limite do modo. A disponibilidade final, empréstimo e juros dependem da sua conta e mudam na Binance.</p></article><article class="panel market-alert-panel"><div class="panel-head"><div><small>ALERTAS AVANÇADOS</small><h3>Força, queda, volatilidade e máxima diária</h3></div><span class="tag">ATUALIZAÇÃO MANUAL + 5 MIN</span></div><div id="marketAlerts" class="alert-grid"><div class="empty">Atualize o radar para calcular alertas.</div></div></article><article id="aiMarketPanel" class="panel ai-panel"><div class="panel-head"><div><small>AGENTE ANTHROPIC</small><h3>Leitura cautelosa do mercado</h3></div><span class="tag">SEM ORDEM AUTOMÁTICA</span></div><div id="aiMarketResult" class="empty">Atualize o radar e peça uma análise. Alta recente não garante continuação.</div></article><div class="panel table-wrap"><table><thead><tr><th>#</th><th>Moeda</th><th>Preço USDT</th><th>Variação 24h</th><th>Volume USDT</th><th>Amplitude</th><th>Posição 24h</th><th>Margem</th><th>Nota</th><th>Estado</th></tr></thead><tbody id="radarTable"></tbody></table><div id="radarEmpty" class="empty">Clique em Atualizar radar.</div></div></section>

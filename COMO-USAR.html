@@ -1,0 +1,152 @@
+<title>Como usar o BaladaTrade</title>
+<style>
+  :root{
+    --tinta:#e9edf3; --suave:#8fa0b5; --linha:#232c39; --papel:#0b0f15; --caixa:#131820;
+    --verde:#22c55e; --sol:#f5b301; --brasa:#ff6b5b; --mar:#4a7fd4;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--papel);color:var(--tinta);
+    font:17px/1.6 "Fira Sans","Segoe UI",system-ui,-apple-system,sans-serif;-webkit-text-size-adjust:100%}
+  .folha{max-width:720px;margin:0 auto;padding:26px 18px 80px}
+
+  header{border-bottom:3px solid var(--verde);padding-bottom:18px;margin-bottom:26px}
+  .marca{font-size:12px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--suave);margin-bottom:8px}
+  .marca b{color:var(--verde)}
+  h1{font-size:clamp(27px,6vw,36px);line-height:1.15;letter-spacing:-.02em}
+  .sub{font-size:16px;color:var(--suave);margin-top:8px}
+
+  h2{font-size:22px;margin:38px 0 8px;letter-spacing:-.01em;line-height:1.25}
+  h2 .n{color:var(--verde);margin-right:8px;font-variant-numeric:tabular-nums}
+  h3{font-size:18px;margin:24px 0 8px}
+  p{margin:0 0 14px}
+  ul,ol{margin:0 0 14px;padding-left:22px}
+  li{margin-bottom:8px}
+  code{background:#1a2029;padding:2px 7px;border-radius:5px;font-size:.87em;
+    font-family:ui-monospace,Menlo,monospace;color:#c9d6e6}
+  b,strong{color:#fff}
+
+  .passo{background:var(--caixa);border:1px solid var(--linha);border-left:5px solid var(--verde);
+    border-radius:12px;padding:17px 19px;margin-bottom:13px}
+  .passo b{display:block;font-size:18px;margin-bottom:5px}
+  .passo span{color:var(--suave);font-size:16px;line-height:1.55;display:block}
+
+  .caixa{border-radius:12px;padding:16px 18px;margin:20px 0;border-left:5px solid}
+  .agora{background:#1a1206;border-left-color:var(--sol)}
+  .perigo{background:#1e0f0d;border-left-color:var(--brasa)}
+  .bom{background:#0e1f14;border-left-color:var(--verde)}
+  .info{background:#101a28;border-left-color:var(--mar)}
+  .caixa .rot{display:block;font-size:11px;font-weight:800;letter-spacing:.1em;
+    text-transform:uppercase;margin-bottom:7px}
+  .agora .rot{color:var(--sol)} .perigo .rot{color:var(--brasa)}
+  .bom .rot{color:var(--verde)} .info .rot{color:var(--mar)}
+  .caixa p:last-child{margin-bottom:0}
+
+  .rolagem{overflow-x:auto;margin:18px 0;-webkit-overflow-scrolling:touch}
+  table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--linha);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--suave);font-weight:800}
+  tbody tr:last-child td{border-bottom:0}
+  .x{color:var(--brasa);font-weight:700}
+  .v{color:var(--verde);font-weight:700}
+
+  .frase{font-size:20px;line-height:1.45;font-weight:700;border-left:4px solid var(--sol);
+    padding:8px 0 8px 18px;margin:26px 0}
+
+  footer{margin-top:46px;padding-top:18px;border-top:1px solid var(--linha);
+    font-size:14px;color:var(--suave);line-height:1.55}
+</style>
+
+<div class="folha">
+<header>
+  <p class="marca">BALADA<b>TRADE</b></p>
+  <h1>Como usar, passo a passo</h1>
+  <p class="sub">Sete passos. O quarto é o que mais dá dinheiro, e é o de não fazer nada.</p>
+</header>
+
+<div class="caixa agora">
+  <span class="rot">A sua tela agora — 5 de setembro, 15h</span>
+  <p>Rodei a peneira nos nove pares que apareceram para você. <b>Zero elegíveis.</b></p>
+  <p>Sete estão marcados <b>ESTICADA</b> — já subiram, e entrar agora é comprar o topo de outra pessoa. O <b>DASHUSDT</b> é o único com setup bom (PULLBACK LONG), mas o volume está em <b>0,63x</b> da média: o movimento não tem quem sustente.</p>
+  <p><b>A tela está te dizendo para não operar.</b> Isso não é a ferramenta falhando — é ela funcionando.</p>
+</div>
+
+<h2><span class="n">1</span>Central Pro: só olhe a coluna Setup</h2>
+<p>São muitas colunas, mas a decisão sai de uma só. Os quatro estados:</p>
+
+<div class="rolagem">
+<table>
+  <thead><tr><th>Setup</th><th>O que significa</th><th>Fazer</th></tr></thead>
+  <tbody>
+    <tr><td><b>PULLBACK LONG</b></td><td>Tendência de alta e o preço voltou perto da média. É o único que a ferramenta procura.</td><td class="v">Olhar</td></tr>
+    <tr><td><b>FORÇA LONG</b></td><td>Alta nos dois tempos, com volume acompanhando.</td><td class="v">Olhar</td></tr>
+    <tr><td><b>ESTICADA</b></td><td>Já correu. Está perto da máxima ou com RSI alto.</td><td class="x">Ignorar</td></tr>
+    <tr><td><b>OBSERVAR</b></td><td>Sem alinhamento. Nada a fazer.</td><td class="x">Ignorar</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="n">2</span>Leia o Motivo antes de qualquer coisa</h2>
+<p>A última coluna diz, por escrito, <b>por que aquele par não serve</b>. Não é enfeite: cada linha ali nasceu de um trade que deu errado.</p>
+<ul>
+  <li><code>Volume abaixo de 1x</code> — movimento sem confirmação. É o mais comum, e o mais traiçoeiro.</li>
+  <li><code>RSI acima de 75</code> — sobrecomprado. Quem entra aqui compra de quem está saindo.</li>
+  <li><code>ATR acima de 3%</code> — o stop técnico exigiria posição grande demais para uma banca pequena.</li>
+  <li><code>Já subiu mais de 25% em 24h</code> — a festa começou sem você.</li>
+</ul>
+
+<div class="caixa info">
+  <span class="rot">O que aconteceu esta semana</span>
+  <p>Em 3 de setembro o Bitcoin subiu 5,5% num dia, com SOL a +5,9% e ETH a +5,2%. O sistema não pegou — e não pegou <b>de propósito</b>: foi um <i>short squeeze</i>, com US$ 415 milhões de posições vendidas liquidadas à força.</p>
+  <p>Dois dias depois o Bitcoin já tinha devolvido quase metade. <b>Quem entrou no meio pagou o topo.</b></p>
+</div>
+
+<h2><span class="n">3</span>Escolha só o que passou na peneira</h2>
+<p>Os elegíveis sobem para o topo da lista sozinhos. Se nenhum estiver elegível, <b>a lista inteira é para ser ignorada</b> — não existe "o menos ruim".</p>
+
+<h2><span class="n">4</span>O passo que mais dá dinheiro: não operar</h2>
+<p class="frase">Dia sem setup é dia de não operar. Forçar entrada num dia ruim custa mais do que perder um dia bom.</p>
+<p>Com R$ 40 na conta, cada erro pesa. E a peneira existe justamente para você não entrar naquilo que <i>parece</i> oportunidade e é armadilha — como o ARBUSDT de 02/09, que subiu 14% com o menor volume da tela.</p>
+
+<h2><span class="n">5</span>Antes de clicar, calcule a ordem</h2>
+<p>Nunca abra posição sem saber estes quatro números:</p>
+<div class="passo"><b>O valor da compra</b><span>Não é a sua margem. Com 10x, R$ 40 movem R$ 400 no mercado.</span></div>
+<div class="passo"><b>Quanto perde no stop</b><span>Em reais, não em porcentagem. Porcentagem não assusta; real assusta.</span></div>
+<div class="passo"><b>O preço de liquidação</b><span>Com 10x ele fica a <b>9,6%</b> da entrada. Se o seu stop estiver mais longe que isso, a corretora fecha antes e você perde a margem inteira.</span></div>
+<div class="passo"><b>O preço de empate</b><span>Entrar e sair custa 1% da sua banca em taxas com 10x. Abaixo desse preço, mesmo no verde, você está pagando para operar.</span></div>
+
+<div class="caixa perigo">
+  <span class="rot">A conta que decide tudo</span>
+  <p>Arriscando <b>5% da banca por trade</b>, você aguenta <b>20 erros seguidos</b> — com R$ 40 ou com R$ 4.000, é idêntico.</p>
+  <p>Usando <b>10x com stop de 3%</b>, cada erro leva <b>31% da banca</b>. Você aguenta <b>3</b>.</p>
+  <p>Não é o tamanho da conta que muda. É a alavancagem.</p>
+</div>
+
+<h2><span class="n">6</span>Depois de entrar: o Guardião assume</h2>
+<p>Abra o <b>Monitor</b>. O sistema passou a dizer, com preço exato, onde o stop deve estar:</p>
+<div class="rolagem">
+<table>
+  <thead><tr><th>Quando o trade valer</th><th>A ordem</th><th>Por quê</th></tr></thead>
+  <tbody>
+    <tr><td><b>Menos de 1R</b></td><td>Não mexer</td><td>Subir stop cedo é como se é tirado de um trade que ia dar certo.</td></tr>
+    <tr><td><b>1R</b></td><td>Stop na <b>entrada</b></td><td>O degrau mais importante: daqui em diante o trade não vira prejuízo.</td></tr>
+    <tr><td><b>2R</b></td><td>Stop em +1R</td><td>Garantiu o que arriscou. O resto corre de graça.</td></tr>
+    <tr><td><b>3R ou mais</b></td><td>Trava metade do caminho</td><td>Solto para respirar, apertado para não devolver tudo.</td></tr>
+  </tbody>
+</table>
+</div>
+<p><b>1R é o que você arriscou.</b> Se o stop estava a R$ 2 da entrada, 1R é R$ 2 de lucro. Medir assim é o que permite comparar qualquer moeda com qualquer outra.</p>
+
+<div class="caixa bom">
+  <span class="rot">A regra que o Guardião nunca quebra</span>
+  <p>O stop <b>sobe e não desce nunca mais</b>. Se o trade valeu 4R e recuou para 2R, a proteção conquistada continua lá — porque foi ganha.</p>
+</div>
+
+<h2><span class="n">7</span>Anote o resultado, sempre</h2>
+<p>Vinte trades registrados dizem se o método tem vantagem. Vinte trades não registrados não dizem nada — e é por isso que a maioria opera anos sem saber se ganha ou perde.</p>
+<p>Com R$ 40, é isto que você está comprando: <b>não é lucro, é a resposta</b>. E a resposta serve igual quando a banca for R$ 4.000.</p>
+
+<footer>
+  <p><b>Se for operar hoje:</b> XRP ou DOGE, entre 3x e 5x, arriscando R$ 2 por trade. Nessa alavancagem a liquidação fica a 20–33% de distância — longe o bastante para um repique normal não te varrer.</p>
+  <p>BaladaTrade · disciplina antes de tudo</p>
+</footer>
+</div>

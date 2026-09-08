@@ -770,7 +770,8 @@ observadorDoMenu.observe(document.querySelector('nav') || document.body, { child
 // "está com defeito" é a única que importa para quem vai consertar.
 
 async function carregarDiagnostico() {
-  const d = await fetch('/api/system/health').then(r => r.json()).catch(() => null);
+  const response=await fetch('/api/system/health').catch(()=>null);
+  const d=response?.ok?await response.json().catch(()=>null):null;
   const lista = $('#diagLista'), titulo = $('#diagTitulo');
   if (!lista) return;
   if (!d) { titulo.textContent = 'Não consegui conferir o sistema'; lista.innerHTML = ''; return; }

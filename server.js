@@ -24,6 +24,7 @@ function recordLoginFailure(ip,now=Date.now()){const r=loginFailures.get(ip);if(
 function sameOrigin(req){if(String(req.headers['sec-fetch-site']||'').toLowerCase()==='cross-site')return false;const origin=req.headers.origin;if(!origin)return true;const host=String(req.headers['x-forwarded-host']||req.headers.host||'').split(',')[0].trim();try{return Boolean(host)&&new URL(origin).host===host}catch{return false}}
 function applySecurityHeaders(req,res){res.setHeader('content-security-policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests");res.setHeader('x-content-type-options','nosniff');res.setHeader('x-frame-options','DENY');res.setHeader('referrer-policy','no-referrer');res.setHeader('permissions-policy','camera=(), microphone=(), geolocation=(), payment=()');if(String(req.headers['x-forwarded-proto']||'').split(',')[0].trim()==='https')res.setHeader('strict-transport-security','max-age=31536000; includeSubDomains')}
 function ordensDoRoboParaPanico(abertas=[]){return abertas.filter(o=>String(o?.clientOrderId||'').startsWith('bt'))}
+function confirmacaoRealValida(req,modo){return modo!=='REAL'||req.headers['x-confirm-live']==='CONFIRMAR-ROBO-REAL'}
 
 function json(res, status, payload) {
   res.writeHead(status, {'content-type':'application/json','cache-control':'no-store'});
@@ -1545,7 +1546,7 @@ async function api(req, res, pathname) {
     // ---- ROBÔ ----
     if (pathname === '/api/robo/estado' && req.method === 'GET') return json(res,200,await painelDoRobo());
     if (pathname === '/api/robo/historico' && req.method === 'GET') return json(res,200,{decisoes:await decisoesDoRobo(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50))});
-    if (pathname === '/api/robo/ciclo' && req.method === 'POST') return json(res,200,{decisao:await cicloDoRobo({forcado:true}),painel:await painelDoRobo()});
+    if (pathname === '/api/robo/ciclo' && req.method === 'POST') {const salvo=await estadoDoRobo(),cfg=configDoRobo(salvo.config);if(!confirmacaoRealValida(req,cfg.modo))return json(res,403,{error:'Ciclo manual em modo REAL exige confirmação explícita.'});return json(res,200,{decisao:await cicloDoRobo({forcado:true}),painel:await painelDoRobo()})}
     if (pathname === '/api/robo/posicoes' && req.method === 'GET') {
       const fechadas=await posicoesFechadasHoje().catch(()=>[]);
       // Sem banco o painel mostra vazio com explicacao, em vez de quebrar. Uma
@@ -1736,6 +1737,7 @@ if (require.main === module) {
       // robo subia acreditando numa realidade que podia ter mudado enquanto
       // ele estava fora: ordem cancelada pelo aplicativo, posicao que fechou,
       // ou um trailing interrompido no meio deixando a posicao descoberta.
+      if(cfg.modo==='REAL'){await salvarEstadoDoRobo({ligado:false});console.log('Robô REAL não religa após reinício. Confirme manualmente no painel.');return}
       if(cfg.modo!=='SIMULACAO'){
         const r=await reconciliarNoBoot();
         console.log(`Robô: ${r.conferidas.length} posição(ões) conferida(s), ${r.reprotegidas.length} reprotegida(s), ${r.orfas.length} ordem(ns) órfã(s)${r.erro?` — ${r.erro}`:''}`);
@@ -1747,4 +1749,4 @@ if (require.main === module) {
     }
   }).catch(error=>console.error('Falha PostgreSQL:',error.message));
 }
-module.exports = {handler,leituraDaMesa,peneira,ordensDoRoboParaPanico,configDoRobo,timeframeReading};
+module.exports = {handler,leituraDaMesa,peneira,ordensDoRoboParaPanico,configDoRobo,timeframeReading,confirmacaoRealValida};

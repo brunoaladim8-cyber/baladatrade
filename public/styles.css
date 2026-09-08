@@ -238,3 +238,28 @@ nav .nav{width:100%}
 .mode-banner.real{background:#fff0f0;color:#a40000;border-color:#ffb8b8}
 .mode-banner span{font-size:.78rem;letter-spacing:.08em}
 @media(max-width:720px){.mode-banner{align-items:flex-start;flex-direction:column;gap:4px}.nav-grupo{display:none}}
+
+/* Identidade BaladaTrade: azul, preto e branco */
+:root{--green:#1677ff;--lime:#58a6ff;--ink:#08111f;--muted:#64748b;--cream:#f4f7fb;--white:#fff;--line:#d8e1ee;--shadow:0 18px 55px rgba(5,15,32,.10)}
+body{background:#f4f7fb;color:#08111f}
+.sidebar{background:#050a12;color:#fff}
+.brand span{background:#1677ff;color:#fff}
+.nav{color:#a9b8cc}
+.nav:hover,.nav.active{background:#123b70;color:#fff}
+.side-card{border-color:#234a78;background:#09182b}
+.side-card p,.disclaimer{color:#9eb1ca}
+.primary{background:#1677ff;color:#fff;box-shadow:0 8px 22px rgba(22,119,255,.24)}
+.secondary{background:#e9eff8;color:#08111f}
+.hero{background-color:#071426;background-image:radial-gradient(circle at 74% 18%,#174d91 0,transparent 34%)}
+.hero em{color:#62aaff}.hero p{color:#c3d2e6}
+.pill,.tag{background:#e7f1ff;color:#0b57b7}
+.level-ring{border-color:#1677ff}.bar{background:#24405f}.bar i{background:#58a6ff}
+.discipline-panel,.mission.done,.strategy-body.info,.alert.info{background:#edf5ff}
+.guided-start{background:linear-gradient(135deg,#eaf3ff,#fff)}
+input,select,textarea{border-color:#c7d4e5}
+.link{color:#1268d3}
+.positive{color:#079455}.negative{color:#d92d20}
+.mode-banner,.mode-banner.simulacao{background:#e8f2ff;color:#0b57b7;border-color:#a9ccff}
+.mode-banner.testnet{background:#071f3d;color:#d7e9ff;border-color:#2467ac}
+.mode-banner.real{background:#090d14;color:#fff;border:2px solid #ff4d4f}
+@media(max-width:900px){.sidebar{background:#050a12}.sidebar .nav.active{background:#174d91}header{background:rgba(244,247,251,.95)}}

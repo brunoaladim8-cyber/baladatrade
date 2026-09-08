@@ -16,16 +16,24 @@ const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
 let monitorAssetCache={assets:[],updatedAt:0};
 const monitorFallback=['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','LINK','AVAX','CAKE'].map(asset=>({symbol:`${asset}USDT`,label:`${asset} / USDT`,market:'Cripto · Binance',quantityLabel:asset,feed:'Binance'}));
+const MAX_BODY_BYTES=1024*1024,LOGIN_WINDOW_MS=15*60*1000,LOGIN_MAX_FAILURES=5;
+const loginFailures=new Map();
+function clientIp(req){return String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim()}
+function loginBlocked(ip,now=Date.now()){const r=loginFailures.get(ip);if(!r)return false;if(now-r.startedAt>=LOGIN_WINDOW_MS){loginFailures.delete(ip);return false}return r.count>=LOGIN_MAX_FAILURES}
+function recordLoginFailure(ip,now=Date.now()){const r=loginFailures.get(ip);if(!r||now-r.startedAt>=LOGIN_WINDOW_MS)loginFailures.set(ip,{count:1,startedAt:now});else r.count+=1}
+function sameOrigin(req){if(String(req.headers['sec-fetch-site']||'').toLowerCase()==='cross-site')return false;const origin=req.headers.origin;if(!origin)return true;const host=String(req.headers['x-forwarded-host']||req.headers.host||'').split(',')[0].trim();try{return Boolean(host)&&new URL(origin).host===host}catch{return false}}
+function applySecurityHeaders(req,res){res.setHeader('content-security-policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests");res.setHeader('x-content-type-options','nosniff');res.setHeader('x-frame-options','DENY');res.setHeader('referrer-policy','no-referrer');res.setHeader('permissions-policy','camera=(), microphone=(), geolocation=(), payment=()');if(String(req.headers['x-forwarded-proto']||'').split(',')[0].trim()==='https')res.setHeader('strict-transport-security','max-age=31536000; includeSubDomains')}
+function ordensDoRoboParaPanico(abertas=[]){return abertas.filter(o=>String(o?.clientOrderId||'').startsWith('bt'))}
 
 function json(res, status, payload) {
-  res.writeHead(status, {'content-type':'application/json'});
+  res.writeHead(status, {'content-type':'application/json','cache-control':'no-store'});
   res.end(JSON.stringify(payload));
 }
 
 function parseCookies(req) {
   return Object.fromEntries((req.headers.cookie || '').split(';').filter(Boolean).map(value => {
     const index = value.indexOf('=');
-    return [value.slice(0, index).trim(), decodeURIComponent(value.slice(index + 1))];
+    try{return [value.slice(0,index).trim(),decodeURIComponent(value.slice(index+1))]}catch{return ['', '']}
   }));
 }
 
@@ -55,9 +63,10 @@ function passwordMatches(received) {
 }
 
 async function body(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  return JSON.parse(Buffer.concat(chunks).toString() || '{}');
+  if(!String(req.headers['content-type']||'').toLowerCase().includes('application/json')){const error=new Error('Envie JSON com Content-Type application/json.');error.statusCode=415;throw error}
+  const chunks=[];let total=0;
+  for await(const chunk of req){total+=chunk.length;if(total>MAX_BODY_BYTES){const error=new Error('Corpo da requisição excede 1 MB.');error.statusCode=413;throw error}chunks.push(chunk)}
+  try{return JSON.parse(Buffer.concat(chunks).toString()||'{}')}catch{const error=new Error('JSON inválido.');error.statusCode=400;throw error}
 }
 
 // A Binance recusa qualquer ordem Spot abaixo de ~5 USDT (MIN_NOTIONAL). Um
@@ -177,7 +186,7 @@ async function signedBinance(endpoint, method='GET', params={}) {
   if (!permissao.pode) throw new Error(`Binance em espera: ${permissao.motivo}`);
   const query = new URLSearchParams({...params, recvWindow:'5000', timestamp:String(Date.now())});
   query.set('signature', crypto.createHmac('sha256', cfg.secret).update(query.toString()).digest('hex'));
-  const response = await fetch(`${cfg.base}${endpoint}?${query}`, {method, headers:{'X-MBX-APIKEY':cfg.key}});
+  const response = await fetch(`${cfg.base}${endpoint}?${query}`, {method,headers:{'X-MBX-APIKEY':cfg.key},signal:AbortSignal.timeout(10000)});
   limites.registrar(response.status, response.headers);
   const data = await response.json();
   if (!response.ok) throw new Error(data.msg || `Binance respondeu ${response.status}`);
@@ -970,7 +979,7 @@ function configDoRobo(doBanco = {}) {
     notionalMaximo: Number(doBanco.notionalMaximo) || tetoGlobal,
   });
   const podeReal = process.env.ENABLE_LIVE_TRADING === 'true' && process.env.ROBO_PERMITE_REAL === 'true';
-  if (cfg.modo === 'REAL' && !podeReal) cfg.modo = 'TESTNET';
+  if (cfg.modo === 'REAL' && !podeReal) cfg.modo = 'SIMULACAO';
   // O teto do robô nunca passa o teto global do projeto — mas também nunca cai
   // abaixo do mínimo negociável, porque abaixo disso ele não seria um limite:
   // seria um robô desligado fingindo estar ligado.
@@ -1037,6 +1046,9 @@ async function cicloDoRobo({ forcado = false } = {}) {
   try {
     const salvo = await estadoDoRobo().catch(() => ({ ligado: false, killSwitch: false, config: {} }));
     const cfg = configDoRobo(salvo.config);
+    const ambiente=binanceConfig();
+    if(cfg.modo==='TESTNET'&&!ambiente.base.includes('testnet'))return (ultimoResultado={acao:'PARADO',motivo:'TESTNET_NAO_ISOLADA',texto:'Testnet bloqueada: as chaves e a URL configuradas pertencem à Binance real. Configure credenciais exclusivas da Spot Test Network antes de usar este modo.',config:cfg,em:comecou});
+    if(cfg.modo==='REAL'&&(!ambiente.live||process.env.ROBO_PERMITE_REAL!=='true'||ambiente.base.includes('testnet')))return (ultimoResultado={acao:'PARADO',motivo:'REAL_NAO_AUTORIZADO',texto:'Modo real bloqueado pelas travas do servidor.',config:cfg,em:comecou});
 
     if (!salvo.ligado && !forcado) {
       return (ultimoResultado = { acao: 'PARADO', motivo: 'DESLIGADO', texto: 'O robô está desligado. Ligue no painel para ele começar a olhar o mercado.', config: cfg, em: comecou });
@@ -1398,11 +1410,15 @@ async function painelDoRobo() {
 }
 
 async function api(req, res, pathname) {
+  if(!['GET','HEAD'].includes(req.method)&&!sameOrigin(req))return json(res,403,{error:'Origem não autorizada'});
   if (pathname === '/api/auth/session') return json(res, 200, {authenticated:authorized(req)});
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     if (!process.env.APP_PASSWORD || !authSecret()) return json(res,503,{error:'Autenticação ainda não configurada'});
+    const ip=clientIp(req);
+    if(loginBlocked(ip)){res.setHeader('retry-after',String(Math.ceil(LOGIN_WINDOW_MS/1000)));return json(res,429,{error:'Muitas tentativas. Aguarde 15 minutos.'})}
     const data = await body(req);
-    if (!passwordMatches(data.password)) return json(res,401,{error:'Senha incorreta'});
+    if (!passwordMatches(data.password)){recordLoginFailure(ip);return json(res,401,{error:'Senha incorreta'})}
+    loginFailures.delete(ip);
     const expires = String(Date.now() + 12 * 60 * 60 * 1000);
     res.writeHead(200, {'content-type':'application/json','set-cookie':`baladatrade_session=${expires}.${sign(expires)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=43200`});
     return res.end(JSON.stringify({authenticated:true}));
@@ -1572,14 +1588,10 @@ async function api(req, res, pathname) {
     if (pathname === '/api/robo/panico' && req.method === 'POST') {
       pararAgendador();
       await salvarEstadoDoRobo({ligado:false,killSwitch:true});
-      const abertas=await signedBinance('/api/v3/openOrders').catch(()=>[]);
-      const pares=[...new Set((Array.isArray(abertas)?abertas:[]).map(o=>o.symbol))];
-      const canceladas=[];
-      for(const par of pares){
-        const r=await signedBinance('/api/v3/openOrders','DELETE',{symbol:par}).catch(error=>({erro:error.message}));
-        canceladas.push({simbolo:par,resultado:r});
-      }
-      return json(res,200,{ok:true,canceladas,painel:await painelDoRobo()});
+      const abertas=await signedBinance('/api/v3/openOrders').catch(()=>[]),minhas=ordensDoRoboParaPanico(Array.isArray(abertas)?abertas:[]),canceladas=[],listas=new Set();
+      for(const ordem of minhas){const listId=Number(ordem.orderListId);if(Number.isFinite(listId)&&listId>=0){if(listas.has(listId))continue;listas.add(listId);const resultado=await signedBinance('/api/v3/orderList','DELETE',{symbol:ordem.symbol,orderListId:String(listId)}).catch(error=>({erro:error.message}));canceladas.push({simbolo:ordem.symbol,orderListId:listId,resultado})}else{const resultado=await signedBinance('/api/v3/order','DELETE',{symbol:ordem.symbol,orderId:String(ordem.orderId)}).catch(error=>({erro:error.message}));canceladas.push({simbolo:ordem.symbol,orderId:ordem.orderId,resultado})}}
+      const falhas=canceladas.filter(x=>x.resultado?.erro);
+      return json(res,falhas.length?502:200,{ok:falhas.length===0,encontradas:minhas.length,canceladas,preservadas:(Array.isArray(abertas)?abertas.length:0)-minhas.length,falhas,painel:await painelDoRobo()});
     }
     if (pathname === '/api/robo/soltar-panico' && req.method === 'POST') {
       await salvarEstadoDoRobo({killSwitch:false});
@@ -1681,19 +1693,21 @@ async function api(req, res, pathname) {
       return json(res,200,{ok:true,mode:real?'real':'test',result});
     }
     return json(res,404,{error:'Endpoint não encontrado'});
-  } catch (error) { return json(res,502,{error:error.message}); }
+  } catch (error) {const status=Number(error.statusCode)||502;return json(res,status,{error:status>=500?'Falha ao processar a solicitação.':error.message}); }
 }
 
 function handler(req, res) {
+  applySecurityHeaders(req,res);
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/health') {
     res.writeHead(200, {'content-type':'application/json'});
     return res.end(JSON.stringify({status:'ok', app:'BaladaTrade'}));
   }
-  if (url.pathname.startsWith('/api/')) return void api(req,res,url.pathname);
+  if (url.pathname.startsWith('/api/')) return void api(req,res,url.pathname).catch(error=>{if(!res.headersSent)json(res,Number(error.statusCode)||500,{error:Number(error.statusCode)<500?error.message:'Falha ao processar a solicitação.'})});
   const requested = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
   const file = path.normalize(path.join(root, requested));
-  if (!file.startsWith(root)) { res.writeHead(403); return res.end('Forbidden'); }
+  const relative=path.relative(root,file);
+  if(relative.startsWith('..')||path.isAbsolute(relative)){res.writeHead(403);return res.end('Forbidden')}
   fs.readFile(file, (error, data) => {
     if (error) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, {'content-type': types[path.extname(file)] || 'application/octet-stream'});
@@ -1733,4 +1747,4 @@ if (require.main === module) {
     }
   }).catch(error=>console.error('Falha PostgreSQL:',error.message));
 }
-module.exports = {handler,leituraDaMesa,peneira};
+module.exports = {handler,leituraDaMesa,peneira,ordensDoRoboParaPanico,configDoRobo};

@@ -231,3 +231,10 @@ nav .nav{width:100%}
 .diag-item b{display:block;font-size:13px;margin-bottom:3px}
 .diag-item span{display:block;color:var(--muted);font-size:12px}
 .diag-item small{display:block;margin-top:7px;color:var(--ink);font-size:11px;line-height:1.5;opacity:.85}
+
+
+.mode-banner{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:12px 18px;margin:0 0 18px;border-radius:14px;background:#e8f7ef;color:#075b3b;border:1px solid #a8dfc2;font-weight:800}
+.mode-banner.testnet{background:#eaf2ff;color:#174ea6;border-color:#b9d0ff}
+.mode-banner.real{background:#fff0f0;color:#a40000;border-color:#ffb8b8}
+.mode-banner span{font-size:.78rem;letter-spacing:.08em}
+@media(max-width:720px){.mode-banner{align-items:flex-start;flex-direction:column;gap:4px}.nav-grupo{display:none}}

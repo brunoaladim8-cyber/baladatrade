@@ -461,7 +461,7 @@ async function monitorPositions(){
 function ema(values,period){if(!values.length)return 0;const k=2/(period+1);return values.slice(1).reduce((value,item)=>item*k+value*(1-k),values[0])}
 function atr(candles,period=14){const ranges=candles.map((c,i)=>Math.max(c.high-c.low,i?Math.abs(c.high-candles[i-1].close):0,i?Math.abs(c.low-candles[i-1].close):0));const sample=ranges.slice(-period);return sample.length?sample.reduce((a,b)=>a+b,0)/sample.length:0}
 function rsi(values,period=14){if(values.length<2)return 50;const changes=values.slice(1).map((v,i)=>v-values[i]).slice(-period),gain=changes.reduce((s,v)=>s+Math.max(v,0),0)/changes.length,loss=changes.reduce((s,v)=>s+Math.max(-v,0),0)/changes.length;return loss?100-(100/(1+gain/loss)):100}
-async function publicKlines(symbol,interval,limit=120){const response=await fetchPublico(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),data=await response.json();if(!response.ok)throw new Error(data.msg||'Candles indisponíveis.');return data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5]),quoteVolume:Number(row[7])}))}
+async function publicKlines(symbol,interval,limit=120){const response=await fetchPublico(`${marketBase()}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`),data=await response.json();if(!response.ok)throw new Error(data.msg||'Candles indisponíveis.');return data.map(row=>({time:row[0],open:Number(row[1]),high:Number(row[2]),low:Number(row[3]),close:Number(row[4]),volume:Number(row[5]),closeTime:Number(row[6]),quoteVolume:Number(row[7])}))}
 
 async function mnqCandles(){
   const end=Math.floor(Date.now()/1000),start=end-59*24*60*60,url=`https://query1.finance.yahoo.com/v8/finance/chart/MNQ=F?period1=${start}&period2=${end}&interval=15m&includePrePost=true`;
@@ -470,7 +470,7 @@ async function mnqCandles(){
   const quote=result.indicators?.quote?.[0]||{};
   return (result.timestamp||[]).map((time,i)=>({time:time*1000,open:Number(quote.open?.[i]),high:Number(quote.high?.[i]),low:Number(quote.low?.[i]),close:Number(quote.close?.[i]),volume:Number(quote.volume?.[i]||0)})).filter(c=>[c.open,c.high,c.low,c.close].every(Number.isFinite));
 }
-function timeframeReading(candles,label){const closes=candles.map(c=>c.close),last=candles.at(-1),previous=candles.at(-2),ema20=ema(closes.slice(-60),20),ema50=ema(closes.slice(-100),50),atrValue=atr(candles),avgVolume=candles.slice(-21,-1).reduce((s,c)=>s+c.quoteVolume,0)/Math.max(candles.slice(-21,-1).length,1),volumeRatio=avgVolume?last.quoteVolume/avgVolume:0,change=previous?.close?(last.close-previous.close)/previous.close*100:0;return {label,price:last.close,change,ema20,ema50,atr:atrValue,atrPct:last.close?atrValue/last.close*100:0,rsi:rsi(closes),volumeRatio,trend:last.close>ema20&&ema20>ema50?'ALTA':last.close<ema20&&ema20<ema50?'BAIXA':'LATERAL'}}
+function timeframeReading(candles,label){const fechados=candles.filter(c=>!Number.isFinite(c.closeTime)||c.closeTime<=Date.now()),serie=fechados.length>=2?fechados:candles.slice(0,-1),closes=serie.map(c=>c.close),last=serie.at(-1),previous=serie.at(-2),ema20=ema(closes.slice(-60),20),ema50=ema(closes.slice(-100),50),atrValue=atr(serie),janelaVolume=serie.slice(-21,-1),avgVolume=janelaVolume.reduce((s,c)=>s+c.quoteVolume,0)/Math.max(janelaVolume.length,1),volumeRatio=avgVolume?last.quoteVolume/avgVolume:0,change=previous?.close?(last.close-previous.close)/previous.close*100:0;return {label,price:last.close,change,ema20,ema50,atr:atrValue,atrPct:last.close?atrValue/last.close*100:0,rsi:rsi(closes),volumeRatio,trend:last.close>ema20&&ema20>ema50?'ALTA':last.close<ema20&&ema20<ema50?'BAIXA':'LATERAL'}}
 
 function summarizeTrades(rows,market){
   const trades=(rows||[]).map(t=>({market,id:t.id,time:Number(t.time),side:t.isBuyer?'BUY':'SELL',price:Number(t.price),quantity:Number(t.qty),quote:Number(t.quoteQty||Number(t.price)*Number(t.qty)),commission:Number(t.commission||0),commissionAsset:t.commissionAsset})).sort((a,b)=>b.time-a.time);
@@ -1747,4 +1747,4 @@ if (require.main === module) {
     }
   }).catch(error=>console.error('Falha PostgreSQL:',error.message));
 }
-module.exports = {handler,leituraDaMesa,peneira,ordensDoRoboParaPanico,configDoRobo};
+module.exports = {handler,leituraDaMesa,peneira,ordensDoRoboParaPanico,configDoRobo,timeframeReading};

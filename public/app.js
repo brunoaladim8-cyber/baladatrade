@@ -577,7 +577,8 @@ $('#roboLigar')?.addEventListener('click', async () => {
 $('#roboCiclo')?.addEventListener('click', async () => {
   const botao = $('#roboCiclo');
   botao.disabled = true; botao.textContent = 'Analisando…';
-  const r = await fetch('/api/robo/ciclo', { method: 'POST' }).then(x => x.json()).catch(() => null);
+  const headers=$('#roboModoSel').value==='REAL'?{'x-confirm-live':'CONFIRMAR-ROBO-REAL'}:{};
+  const r = await fetch('/api/robo/ciclo', { method: 'POST',headers }).then(x => x.json()).catch(() => null);
   botao.disabled = false; botao.textContent = 'Rodar um ciclo agora';
   if (r?.decisao) pintarDecisaoRobo(r.decisao);
   pintarPainelRobo(r?.painel);

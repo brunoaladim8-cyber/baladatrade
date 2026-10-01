@@ -206,6 +206,18 @@ ordens abertas na Binance. Só um humano solta depois, em
 | `POST /api/robo/conferir` | Confere as posições na Binance agora |
 | `POST /api/robo/reconciliar` | Reconciliação completa contra a corretora |
 
+## Mesa de agentes (01/10/2026)
+
+Inspirada no [TradingAgents](https://github.com/TauricResearch/TradingAgents): em vez de uma leitura só, o par passa por uma mesa de agentes, como numa corretora.
+
+1. **Três analistas em paralelo**: o Técnico olha os três tempos, as EMAs, o RSI e o ATR; o de Fluxo olha volume, livro de ofertas e posição no range; o de Contexto olha o radar do mercado, BTC e ETH.
+2. **Debate**: o 🐂 Touro defende a compra e o 🐻 Urso defende esperar, os dois usando os mesmos relatórios.
+3. **Gestor de Risco**: dá o veredito (ENTRAR COM PLANO, ESPERAR ou EVITAR), a confiança, a condição de entrada e o que invalida a ideia.
+
+As **travas do código valem mais que a IA** (comite.js, `limitarVeredito`): com risco do sistema ≥ 65, setup de venda, os três tempos em baixa ou plano bloqueado, o "entrar" é rebaixado e o motivo aparece na tela. A mesa **não envia ordem** (`execution: MANUAL_ONLY`). Ela não lê notícias nem redes sociais porque não temos essa fonte ligada, e analista sem dado inventa.
+
+Onde fica: aba Spot → busque o par → **🧠 Mesa de agentes**. Cada análise faz 6 chamadas ao Claude (centavos de dólar). Uma mesa roda por vez, com 30 s de intervalo entre rodadas. Rota: `POST /api/ai/mesa` com `{market, plan}`.
+
 ## Diagnóstico
 
 A primeira tela abre com o diagnóstico: o que está funcionando, o que falta e

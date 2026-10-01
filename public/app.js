@@ -194,8 +194,8 @@ const spotView=document.createElement('section');spotView.id='spot';spotView.cla
 <div class="mnq-stats"><span>Risco/retorno liquido <b id="spotRR">—</b></span><span>Risco maximo aceito <b id="spotBudget">—</b></span><span>Exposicao do capital <b id="spotExposure">—</b></span><span>Taxa total estimada <b id="spotFees">—</b></span></div>
 <div class="mnq-decision" id="spotBlockers">O plano so e liberado quando todas as regras passam.</div>
 <details id="spotOcoWrap" hidden><summary>Parametros de OCO para digitar na Binance</summary><div class="mnq-stats"><span>Quantidade <b id="ocoQty">—</b></span><span>Take profit <b id="ocoTake">—</b></span><span>Stop price <b id="ocoStop">—</b></span><span>Stop limit <b id="ocoStopLimit">—</b></span></div><button type="button" class="secondary" id="spotCopy">Copiar plano</button><p class="muted">Valores para conferencia. Nenhuma ordem foi enviada por este painel.</p></details>
-<div class="spot-chips"><button class="secondary" id="spotAudit" disabled>Auditar com IA</button><button class="secondary" id="spotWatch" disabled>Acompanhar no Monitor</button></div>
-<div class="mnq-decision" id="spotAuditOut" hidden></div></article></div>`;
+<div class="spot-chips"><button class="secondary" id="spotMesa" disabled title="3 analistas, Touro x Urso e Gestor de Risco. Só parecer, não manda ordem.">🧠 Mesa de agentes</button><button class="secondary" id="spotAudit" disabled>Auditar com IA</button><button class="secondary" id="spotWatch" disabled>Acompanhar no Monitor</button></div>
+<div class="mnq-decision" id="spotMesaOut" hidden></div><div class="mnq-decision" id="spotAuditOut" hidden></div></article></div>`;
 document.querySelector('#risk').before(spotView);
 // A linha 24 ligou os cliques das abas que vieram no HTML; esta nasceu depois,
 // entao precisa do proprio onclick — mesmo padrao das abas pro/monitor/mnq.
@@ -236,7 +236,7 @@ async function carregarCotacao(){
   $('#spotQuote').textContent='Buscando preco…';spotPreco=null;spotAtr=null;
   try{
     const data=await spotApi(`/api/market/pretrade?symbol=${encodeURIComponent(par)}`);
-    spotPreco=Number(data.price);spotMercado=data;
+    spotPreco=Number(data.price);spotMercado=data;$('#spotMesa').disabled=false;
     // O pretrade rotula os frames em portugues ('15 minutos', '1 hora',
     // '4 horas') no campo `label` — nao 'timeframe'/'15m'. Procurar pela
     // chave errada nao quebra nada visivelmente: o ATR fica nulo e os botoes
@@ -356,6 +356,32 @@ $('#spotWatch').onclick=async()=>{
     botao.textContent='No Monitor ✓';
   }catch(e){botao.textContent='Falhou';$('#spotBlockers').innerHTML+=`<p class="negative">Monitor: ${esc(e.message)}</p>`}
   finally{setTimeout(()=>{botao.disabled=false;botao.textContent='Acompanhar no Monitor'},2500)}
+};
+
+// MESA DE AGENTES (01/10/2026) — o padrão do TradingAgents dentro do Balada:
+// três analistas, Touro x Urso e o Gestor de Risco. Só parecer: o veredito
+// final passa pelas travas de comite.js e nada aqui envia ordem.
+$('#spotMesa').onclick=async()=>{
+  if(!spotMercado)return;
+  const botao=$('#spotMesa'),saida=$('#spotMesaOut');
+  botao.disabled=true;botao.textContent='Mesa reunida…';saida.hidden=false;
+  saida.innerHTML='<p class="muted">Analistas lendo o par, Touro e Urso debatendo, Gestor de Risco decidindo… (até 1 minuto)</p>';
+  try{
+    const r=await spotApi('/api/ai/mesa',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({market:spotMercado,plan:spotPlano})});
+    const d=r.decisao,cor=d.veredito==='ENTRAR_COM_PLANO'?'positive':d.veredito==='EVITAR'?'negative':'';
+    const leitura=l=>l==='ALTA'?'positive':l==='BAIXA'?'negative':'';
+    saida.innerHTML=`<b class="${cor}">${esc(d.veredito.replace(/_/g,' '))}</b> <span class="tag">${number(d.confianca,0)}% de confiança</span> <span class="tag">debate: ${esc(d.quemGanhouODebate)}</span>
+<p>${esc(d.resumo)}</p>
+${d.travas.length?`<p class="negative"><b>Travas do sistema:</b> a IA disse ${esc(String(d.vereditoDaIa||'').replace(/_/g,' '))}, mas ${d.travas.map(esc).join('; ')}.</p>`:''}
+<p><b>Entrar só se:</b> ${esc(d.condicaoDeEntrada)}</p><p><b>Invalida se:</b> ${esc(d.oQueInvalida)}</p>
+<div class="mnq-stats">${r.analistas.map(a=>`<span>${esc(a.nome)} <b class="${leitura(a.leitura)}">${esc(a.leitura)} · ${number(a.nota,0)}</b></span>`).join('')}</div>
+<details><summary>Ver o que cada agente disse</summary>
+${r.analistas.map(a=>`<p><b>${esc(a.nome)}</b></p><ul>${a.pontos.map(p=>`<li>${esc(p)}</li>`).join('')}${a.riscos.map(x=>`<li class="negative">${esc(x)}</li>`).join('')}</ul>`).join('')}
+<p><b class="positive">🐂 Touro:</b> ${esc(r.debate.touro.tese)}</p><ul>${r.debate.touro.argumentos.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+<p><b class="negative">🐻 Urso:</b> ${esc(r.debate.urso.tese)}</p><ul>${r.debate.urso.argumentos.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+</details><p class="muted">${esc(r.aviso)}</p>`;
+  }catch(error){saida.innerHTML=`<b>Mesa indisponível</b><p>${esc(error.message)}</p>`}
+  finally{botao.disabled=false;botao.textContent='🧠 Mesa de agentes'}
 };
 
 $('#spotAudit').onclick=async()=>{

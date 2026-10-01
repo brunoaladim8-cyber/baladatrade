@@ -9,6 +9,7 @@ const {calculateSpotPlan,roundStep:roundStepSpot,floorStep:floorStepSpot}=requir
 const {criarLimites}=require('./limites');
 const {lerPosicao,perdaDoDia}=require('./resultado');
 const {ordensDaMesa,resumoDoGuardiao,ordemDoGuardiao}=require('./guardiao-do-lucro');
+const {rodarMesa}=require('./comite');
 const {normalizarConfig,escolherCandidato,precosDoTrade,decidir:decidirRobo,contarPosicoes,minhasOrdens,entradasVencidas,CONFIG_PADRAO}=require('./robo');
 const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo}=require('./db');
 
@@ -499,6 +500,32 @@ async function marketAgentAnalysis(){
   const text=message.content.filter(block=>block.type==='text').map(block=>block.text).join('').replace(/^```json\s*|\s*```$/g,'');
   let analysis;try{analysis=JSON.parse(text)}catch{throw new Error('O agente retornou uma análise inválida. Tente novamente.');}
   return {analysis,model:message.model,generatedAt:new Date().toISOString(),disclaimer:'Análise educacional baseada em dados de mercado; não é recomendação financeira.'};
+}
+
+// MESA DE AGENTES (01/10/2026) — padrão TradingAgents: 3 analistas, Touro x
+// Urso e Gestor de Risco. São 6 chamadas ao Claude por análise, por isso uma
+// mesa de cada vez e 30s de folga entre rodadas: clique repetido não pode
+// virar conta de API. A lógica e as travas moram em comite.js.
+let mesaOcupada=false,mesaUltima=0;
+// statusCode abaixo de 500 para o handler mostrar o motivo na tela em vez do
+// genérico "Falha ao processar".
+const erroDaMesa=(mensagem,status)=>Object.assign(new Error(mensagem),{statusCode:status});
+async function chamarClaudeJson({system,prompt,schema,maxTokens}){
+  const client=new Anthropic({apiKey:process.env.ANTHROPIC_API_KEY});
+  const message=await client.messages.create({model:process.env.ANTHROPIC_MODEL||'claude-sonnet-4-6',max_tokens:maxTokens||800,temperature:.2,output_config:{format:{type:'json_schema',schema}},system,messages:[{role:'user',content:prompt}]});
+  const text=message.content.filter(block=>block.type==='text').map(block=>block.text).join('').replace(/^```json\s*|\s*```$/g,'');
+  try{return JSON.parse(text)}catch{throw erroDaMesa('Um agente da mesa respondeu fora do formato. Tente de novo.',422)}
+}
+async function mesaDeAgentes(market,plan){
+  if(!process.env.ANTHROPIC_API_KEY)throw erroDaMesa('Agente Anthropic sem ANTHROPIC_API_KEY no Railway.',409);
+  if(mesaOcupada)throw erroDaMesa('A mesa já está analisando. Aguarde terminar.',429);
+  const espera=30000-(Date.now()-mesaUltima);
+  if(espera>0)throw erroDaMesa(`Aguarde ${Math.ceil(espera/1000)}s para chamar a mesa de novo.`,429);
+  mesaOcupada=true;
+  try{
+    const radar=await marketRadar(30).catch(()=>[]);
+    return await rodarMesa({mercado:market,radar,plano:plan&&typeof plan==='object'?{allowed:Boolean(plan.allowed)}:null,chamar:chamarClaudeJson});
+  }finally{mesaOcupada=false;mesaUltima=Date.now();}
 }
 
 async function spotAgentAudit(plan,market={}){
@@ -1680,6 +1707,7 @@ async function api(req, res, pathname) {
       return json(res,200,{ok:true,price,account:await paperSummary()});
     }
     if (pathname === '/api/ai/market-analysis' && req.method === 'POST') return json(res,200,await marketAgentAnalysis());
+    if (pathname === '/api/ai/mesa' && req.method === 'POST') {const data=await body(req);if(!data.market||typeof data.market!=='object'||!data.market.symbol)return json(res,400,{error:'Busque o par antes de chamar a mesa.'});return json(res,200,await mesaDeAgentes(data.market,data.plan||null));}
     if (pathname === '/api/ai/spot-audit' && req.method === 'POST') {const data=await body(req);if(!data.plan||typeof data.plan!=='object')return json(res,400,{error:'Calcule o plano Spot antes da auditoria.'});return json(res,200,await spotAgentAudit(data.plan,data.market||{}));}
     if ((pathname === '/api/binance/order/test' || pathname === '/api/binance/order') && req.method === 'POST') {
       const order = await body(req);

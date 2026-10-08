@@ -9,7 +9,7 @@ const GET=['/api/system/health','/api/binance/status','/api/robo/estado','/api/r
 '/api/market/pretrade?symbol=BTCUSDT','/api/market/scans?symbol=BTCUSDT','/api/mnq/profiles','/api/paper/account',
 '/api/ledger','/api/alerts','/api/positions/assets','/api/positions/quote?symbol=BTCUSDT','/api/positions/monitor',
 '/api/portfolio/history','/api/trade-plans','/api/earn/overview','/api/margin/monitor','/api/binance/account',
-'/api/binance/trades?symbol=BTCUSDT','/api/binance/posicoes'];
+'/api/binance/trades?symbol=BTCUSDT','/api/binance/posicoes','/api/b3/estado'];
 const POST=[['/api/ordem/simular',{margem:100,alavancagem:10,precoEntrada:100,stop:98,alvo:106}],
 ['/api/ordem/pelo-risco',{perdaMaxima:10,precoEntrada:100,stop:98}],
 ['/api/spot/plan',{symbol:'BTCUSDT',capital:500,riskPct:1,entry:60000,stop:59000,target:62000}],

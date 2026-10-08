@@ -740,7 +740,7 @@ const GRUPOS_DO_MENU = [
   { titulo: 'OPERAR SPOT', views: ['robo', 'spot'] },
   { titulo: 'ANALISAR', views: ['radar', 'markets'] },
   { titulo: 'CONTROLAR', views: ['monitor', 'dashboard', 'holding', 'earn', 'expenses', 'journal', 'risk'] },
-  { titulo: 'LABORATÓRIO', views: ['paper', 'pro', 'mnq', 'missions'] },
+  { titulo: 'LABORATÓRIO', views: ['bolsa', 'paper', 'pro', 'mnq', 'missions'] },
   { titulo: 'AJUSTES', views: ['broker'] },
 ];
 

@@ -263,3 +263,33 @@ input,select,textarea{border-color:#c7d4e5}
 .mode-banner.testnet{background:#071f3d;color:#d7e9ff;border-color:#2467ac}
 .mode-banner.real{background:#090d14;color:#fff;border:2px solid #ff4d4f}
 @media(max-width:900px){.sidebar{background:#050a12}.sidebar .nav.active{background:#174d91}header{background:rgba(244,247,251,.95)}}
+/* SIMULADOR B3 (07/10/2026) — mini índice e mini dólar com dinheiro simulado */
+.b3-cotas{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:16px}
+.b3-cota{display:flex;flex-direction:column;gap:6px;cursor:pointer;border:2px solid transparent}
+.b3-cota.ativa{border-color:#2563eb}
+.b3-cota-topo{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.b3-cota strong{font-size:30px;line-height:1.1}
+.b3-cota small{color:var(--muted)}
+.tag.b3-fechado{background:#fdecec;color:#b42318}
+.b3-risco{margin:12px 0;padding:12px;border-radius:10px;background:#f4f7fb;font-size:14px;line-height:1.5}
+.b3-botoes{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.b3-botoes button{border:0;border-radius:12px;padding:14px;font-weight:900;font-size:16px;color:#fff;cursor:pointer}
+.b3-compra{background:#079455}.b3-venda{background:#d92d20}
+.b3-botoes button:disabled{opacity:.5;cursor:wait}
+.b3-msg{margin-top:10px;font-size:13px;color:var(--muted)}
+.b3-msg.positive{color:#079455}.b3-msg.negative{color:#d92d20}.b3-msg.b3-info{color:#0b57b7}
+.b3-numeros{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:12px 0}
+.b3-numeros div{background:#f4f7fb;border-radius:10px;padding:10px}
+.b3-numeros small{display:block;font-size:10px;font-weight:900;letter-spacing:.06em;color:var(--muted)}
+.b3-numeros b{font-size:18px}
+.b3-alerta{background:#fff7e6;border-radius:10px;padding:10px;font-size:13px;color:#8a5a00}
+.b3-posicao{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.b3-posicao small{display:block;color:var(--muted);font-size:12px}
+.b3-posicao-direita{text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.b3-grafico-painel{margin:16px 0}
+.b3-grafico{width:100%;height:340px;position:relative;overflow:hidden}
+.b3-grafico .empty{padding:40px;text-align:center;color:var(--muted)}
+.b3-leitura p{margin:10px 0}
+.b3-leitura-topo{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.b3-fonte{font-size:12px;color:var(--muted);margin:16px 4px}
+@media(max-width:900px){.b3-cotas{grid-template-columns:1fr}.b3-cota strong{font-size:26px}}

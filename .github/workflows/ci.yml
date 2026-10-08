@@ -30,6 +30,8 @@ jobs:
           node --check spot-engine.js
           node --check db.js
           node --check public/app.js
+          node --check public/b3.js
+          node --check b3-simulador.js
       - name: Testes
         run: npm test
       - name: Contrato das rotas

@@ -206,6 +206,19 @@ ordens abertas na Binance. Só um humano solta depois, em
 | `POST /api/robo/conferir` | Confere as posições na Binance agora |
 | `POST /api/robo/reconciliar` | Reconciliação completa contra a corretora |
 
+## Simulador B3: mini índice e mini dólar (07/10/2026)
+
+Treino de **WIN** e **WDO** com dinheiro simulado e a regra do contrato de verdade. Aba **◆ Simulador B3**, no grupo Laboratório.
+
+- **Regras do contrato:** WIN vale R$ 0,20 por ponto (tick de 5), WDO vale R$ 10 por ponto (tick de 0,5). Margem de day trade da B3 desde 02/02/2026: R$ 155 no WIN e R$ 140 no WDO.
+- **Disciplina que não se desliga:** stop obrigatório em pontos, uma posição por contrato, trava de perda do dia (padrão R$ 100) e máximo de contratos por ordem. A ordem executa com 1 tick de deslize contra quem opera. Stop e alvo no mesmo candle: vale o stop.
+- **Zeragem:** no fim do pregão simulado, a posição é zerada no último preço, como a corretora faz no day trade.
+- **De onde vem o preço:** o preço do contrato futuro é dado pago. O simulador usa a referência pública do Yahoo: **Ibovespa à vista** para o WIN e **dólar comercial × 1.000** para o WDO. O movimento acompanha; o número tem a diferença de juros do futuro (no WIN, perto de 0,3%). Como o Ibovespa à vista só anda das 10h às 17h, o pregão simulado do WIN é **10h–16h50**. O do WDO é **9h–18h15**.
+- **Custos:** começam em R$ 0 e a tela avisa. Preencha nos Ajustes o custo da sua corretora.
+- **🧠 Leitura do Claude:** lê só os números do pregão (preço, máxima, mínima, médias de 5 min, ATR) e devolve tendência, suporte, resistência e um plano para treinar. Não envia ordem.
+
+Regras em `b3-simulador.js` (função pura, com teste). Rotas: `GET /api/b3/estado`, `POST /api/b3/ordem`, `/api/b3/zerar`, `/api/b3/ajustes`, `/api/b3/reiniciar` e `POST /api/ai/b3-leitura`. Nenhuma delas fala com corretora.
+
 ## Mesa de agentes (01/10/2026)
 
 Inspirada no [TradingAgents](https://github.com/TauricResearch/TradingAgents): em vez de uma leitura só, o par passa por uma mesa de agentes, como numa corretora.

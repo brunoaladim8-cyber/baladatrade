@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="BaladaTrade"><meta name="format-detection" content="telephone=no">
   <title>BaladaTrade — Disciplina vence impulso</title>
   <meta name="theme-color" content="#092e23"><link rel="manifest" href="manifest.json"><link rel="apple-touch-icon" href="icon.svg">
-  <link rel="stylesheet" href="styles.css?v=13"><link rel="stylesheet" href="auth.css?v=13"><link rel="stylesheet" href="ai.css?v=13">
+  <link rel="stylesheet" href="styles.css?v=14"><link rel="stylesheet" href="auth.css?v=14"><link rel="stylesheet" href="ai.css?v=14">
 </head>
 <body>
   <div id="authWall" class="auth-wall">
@@ -26,6 +26,7 @@
       <button class="nav" data-view="radar">⌁ <span>Scanner Spot</span></button>
       <button class="nav" data-view="markets">⌗ <span>Análise completa</span></button>
       <button class="nav" data-view="paper">▣ <span>Simulador Spot</span></button>
+      <button class="nav" data-view="bolsa">◆ <span>Simulador B3</span></button>
       <button class="nav" data-view="journal">↗ <span>Diário de trades</span></button>
       <button class="nav" data-view="missions">★ <span>Missões</span></button>
       <button class="nav" data-view="risk">◇ <span>Gestão de risco</span></button>
@@ -140,8 +141,50 @@
     <section id="risk" class="view"><div class="section-head"><div><p class="eyebrow">CALCULADORA</p><h2>Defina a perda antes da entrada.</h2></div></div><div class="risk-grid"><form id="riskForm" class="panel form"><label>Capital da conta (R$)<input id="capital" type="number" value="10000" min="1" required></label><label>Risco por trade (%)<input id="riskPct" type="number" value="1" min="0.1" max="5" step="0.1" required></label><label>Preço de entrada<input id="entry" type="number" value="100" min="0.0001" step="any" required></label><label>Stop<input id="stop" type="number" value="98" min="0.0001" step="any" required></label><button class="primary" type="submit">Calcular posição</button></form><article class="panel risk-result"><small>RISCO MÁXIMO</small><strong id="maxRisk">R$ 100,00</strong><small>QUANTIDADE ESTIMADA</small><strong id="positionSize">50 unidades</strong><p>O cálculo não considera slippage, liquidez, impostos ou custos específicos.</p></article></div></section>
     <section id="broker" class="view"><div class="section-head"><div><p class="eyebrow">CONEXÃO SEGURA</p><h2>Binance Spot</h2><p class="muted">Comece na Testnet. As chaves ficam somente no servidor.</p></div></div><div class="risk-grid"><article class="panel"><small>STATUS</small><h3 id="brokerStatus">Verificando…</h3><p id="brokerDetail" class="muted"></p><button class="secondary" id="checkBroker">Atualizar status</button></article><form id="orderForm" class="panel form"><span class="tag">ORDEM LIMIT · TESTE</span><label>Par<input id="orderSymbol" value="BTCUSDT" required></label><label>Lado<select id="orderSide"><option value="BUY">Comprar</option><option value="SELL">Vender</option></select></label><label>Quantidade<input id="orderQty" type="number" step="any" min="0" required></label><label>Preço<input id="orderPrice" type="number" step="any" min="0" required></label><button class="primary" type="submit">Validar ordem na Testnet</button><p id="orderResult" class="muted">Nenhuma ordem enviada.</p></form></div></section>
     <section id="markets" class="view"><div class="section-head"><div><p class="eyebrow">BINANCE GLOBAL</p><h2>Todos os mercados</h2><p class="muted">Pesquise qualquer par negociável, acompanhe candles e monte sua watchlist.</p></div><button class="secondary" id="refreshMarkets">Atualizar catálogo</button></div><div class="metrics"><article><small>PARES ATIVOS</small><strong id="marketCount">—</strong><span>Catálogo Binance</span></article><article><small>PAR ABERTO</small><strong id="openedSymbol">SOLUSDT</strong><span id="openedInterval">1 dia</span></article><article><small>ÚLTIMO PREÇO</small><strong id="openedPrice">—</strong><span>Moeda de cotação</span></article><article><small>VARIAÇÃO DO GRÁFICO</small><strong id="openedChange">—</strong><span>Primeiro ao último candle</span></article></div><article class="panel market-chart-panel"><div class="chart-controls"><label>Pesquisar par<input id="chartSymbol" list="binanceSymbols" value="SOLUSDT" maxlength="20"></label><datalist id="binanceSymbols"></datalist><label>Período<select id="chartInterval"><option value="15m">15 minutos</option><option value="1h">1 hora</option><option value="4h">4 horas</option><option value="1d" selected>1 dia</option><option value="1w">1 semana</option></select></label><button class="primary" id="loadChart">Abrir gráfico</button><button class="secondary" id="favoriteSymbol">☆ Favoritar</button></div><canvas id="marketChart" width="1000" height="320"></canvas><p id="chartStatus" class="muted">Carregando mercados…</p></article><div class="grid-main"><article class="panel"><div class="panel-head"><div><small>WATCHLIST</small><h3>Meus favoritos</h3></div><span class="tag">SALVO NO CELULAR</span></div><div id="favoriteList"><div class="empty">Nenhum favorito.</div></div></article><article class="panel"><small>COMO LER</small><h3>Decisão com contexto</h3><p class="muted">O gráfico mostra preço histórico, não previsão. Compare tendência, amplitude e volume antes de qualquer decisão.</p><ul class="market-help"><li>15m e 1h: movimento curto e mais ruído.</li><li>4h e 1d: contexto de tendência.</li><li>1 semana: visão de holding.</li></ul></article></div></section>
+    <section id="bolsa" class="view">
+      <div class="section-head"><div><p class="eyebrow">B3 · DINHEIRO SIMULADO</p><h2>Mini índice e mini dólar</h2><p class="muted">Treine WIN e WDO com a regra do contrato de verdade: valor do ponto, margem, stop obrigatório e trava de perda do dia. Nenhuma ordem vai para corretora.</p></div><button class="secondary" id="b3Atualizar" type="button">Atualizar</button></div>
+      <div class="b3-cotas" id="b3Cotas"><article class="panel b3-cota"><p class="muted">Carregando preços…</p></article></div>
+      <div class="grid-main b3-grid">
+        <form class="panel form b3-boleta" id="b3Boleta">
+          <span class="tag">BOLETA SIMULADA</span>
+          <div class="mode-switch b3-escolha"><button type="button" class="mnq-mode selected" data-contrato="WIN">WIN · Mini Índice</button><button type="button" class="mnq-mode" data-contrato="WDO">WDO · Mini Dólar</button></div>
+          <label>Contratos<input id="b3Qtd" type="number" min="1" max="5" step="1" value="1"></label>
+          <label>Stop em pontos (obrigatório)<input id="b3Stop" type="number" min="25" step="5" value="150" required></label>
+          <label>Alvo em pontos (opcional)<input id="b3Alvo" type="number" min="0" step="5" value="300"></label>
+          <p id="b3Risco" class="b3-risco">—</p>
+          <div class="b3-botoes"><button type="button" class="b3-compra" data-lado="COMPRA">Comprar</button><button type="button" class="b3-venda" data-lado="VENDA">Vender</button></div>
+          <p id="b3Msg" class="b3-msg" role="status"></p>
+        </form>
+        <article class="panel">
+          <div class="panel-head"><div><small>CONTA SIMULADA</small><h3 id="b3Patrimonio">—</h3></div><span class="tag" id="b3Trava">—</span></div>
+          <div class="b3-conta" id="b3Conta"></div>
+          <div class="b3-posicoes" id="b3Posicoes"><p class="muted">Sem posição aberta.</p></div>
+        </article>
+      </div>
+      <article class="panel b3-grafico-painel">
+        <div class="panel-head"><div><small>GRÁFICO DE 5 MINUTOS · PREÇO DE REFERÊNCIA</small><h3 id="b3GraficoTitulo">WIN</h3></div><button class="secondary" id="b3Leitura" type="button">🧠 Leitura do Claude</button></div>
+        <div id="b3Grafico" class="b3-grafico"><div class="empty">O gráfico aparece quando os preços carregam.</div></div>
+        <div id="b3LeituraTexto" class="b3-leitura"></div>
+      </article>
+      <div class="grid-main">
+        <article class="panel"><div class="panel-head"><div><small>HISTÓRICO</small><h3>Operações fechadas</h3></div></div><div id="b3Historico" class="table-wrap"><p class="muted">Nenhuma operação ainda.</p></div></article>
+        <form class="panel form" id="b3Ajustes">
+          <span class="tag">AJUSTES</span>
+          <label>Trava de perda por dia (R$)<input id="b3Limite" type="number" min="10" step="10"></label>
+          <label>Máximo de WIN por ordem<input id="b3MaxWIN" type="number" min="1" max="50" step="1"></label>
+          <label>Máximo de WDO por ordem<input id="b3MaxWDO" type="number" min="1" max="20" step="1"></label>
+          <label>Custo por contrato, cada lado, no WIN (R$)<input id="b3CustoWIN" type="number" min="0" step="0.01"></label>
+          <label>Custo por contrato, cada lado, no WDO (R$)<input id="b3CustoWDO" type="number" min="0" step="0.01"></label>
+          <button class="primary" type="submit">Salvar ajustes</button>
+          <label>Recomeçar a conta com (R$)<input id="b3SaldoNovo" type="number" min="100" step="100" value="1000"></label>
+          <button class="secondary" type="button" id="b3Reiniciar">Recomeçar do zero</button>
+          <p id="b3AjustesMsg" class="b3-msg" role="status"></p>
+        </form>
+      </div>
+      <p class="b3-fonte" id="b3Fonte"></p>
+    </section>
   </main>
 
   <dialog id="tradeModal"><form id="tradeForm" method="dialog"><div class="modal-head"><div><p class="eyebrow">NOVO REGISTRO</p><h2>Documente o trade</h2></div><button type="button" class="close">×</button></div><div class="form-grid"><label>Ativo<input name="asset" placeholder="Ex.: PETR4, WIN, BTC" required maxlength="20"></label><label>Mercado<select name="market"><option>Ações</option><option>Futuros</option><option>Cripto</option><option>Forex</option><option>Opções</option></select></label><label>Lado<select name="side"><option>Compra</option><option>Venda</option></select></label><label>Resultado líquido (R$)<input name="pnl" type="number" step="0.01" required></label><label>Risco planejado (R$)<input name="risk" type="number" min="0" step="0.01" required></label><label>Data<input name="date" type="date" required></label></div><label class="check"><input name="planned" type="checkbox"> Segui meu plano e respeitei o stop</label><label>Notas<textarea name="notes" placeholder="Contexto, entrada, saída e aprendizado"></textarea></label><div class="modal-actions"><button type="button" class="secondary close">Cancelar</button><button class="primary" value="default">Salvar trade + ganhar XP</button></div></form></dialog>
-  <script src="vendor-lightweight-charts.js?v=13"></script><script src="app.js?v=13"></script>
+  <script src="vendor-lightweight-charts.js?v=14"></script><script src="app.js?v=14"></script><script src="b3.js?v=14"></script>
 </body></html>

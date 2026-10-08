@@ -234,6 +234,39 @@ async function initDatabase(){
     );
     CREATE INDEX IF NOT EXISTS robo_posicoes_estado_idx ON robo_posicoes(estado,atualizada_em DESC);
     CREATE INDEX IF NOT EXISTS robo_posicoes_fechada_idx ON robo_posicoes(fechada_em DESC);
+    -- SIMULADOR B3 (07/10/2026): mini índice e mini dólar com dinheiro simulado.
+    -- Uma conta só e uma posição aberta por contrato: o índice único parcial é
+    -- o que impede dois cliques virarem duas posições.
+    CREATE TABLE IF NOT EXISTS b3_conta (
+      id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      saldo_inicial NUMERIC(18,2) NOT NULL,
+      saldo NUMERIC(18,2) NOT NULL,
+      config JSONB NOT NULL DEFAULT '{}',
+      atualizada_em TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO b3_conta(id,saldo_inicial,saldo) VALUES(1,1000,1000) ON CONFLICT(id) DO NOTHING;
+    CREATE TABLE IF NOT EXISTS b3_operacoes (
+      id BIGSERIAL PRIMARY KEY,
+      contrato VARCHAR(4) NOT NULL CHECK (contrato IN ('WIN','WDO')),
+      lado VARCHAR(6) NOT NULL CHECK (lado IN ('COMPRA','VENDA')),
+      quantidade INTEGER NOT NULL CHECK (quantidade > 0),
+      preco_entrada NUMERIC(14,2) NOT NULL,
+      referencia_entrada NUMERIC(14,2) NOT NULL,
+      stop NUMERIC(14,2) NOT NULL,
+      alvo NUMERIC(14,2),
+      preco_saida NUMERIC(14,2),
+      saida_tipo VARCHAR(10),
+      pontos NUMERIC(14,2),
+      resultado_bruto NUMERIC(14,2),
+      custos NUMERIC(14,2),
+      resultado NUMERIC(14,2),
+      estado VARCHAR(8) NOT NULL DEFAULT 'ABERTA' CHECK (estado IN ('ABERTA','FECHADA')),
+      texto TEXT NOT NULL DEFAULT '',
+      aberta_em TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      fechada_em TIMESTAMPTZ
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS b3_uma_aberta_por_contrato ON b3_operacoes(contrato) WHERE estado='ABERTA';
+    CREATE INDEX IF NOT EXISTS b3_operacoes_fechada_idx ON b3_operacoes(fechada_em DESC);
   `);return true;
 }
 
@@ -457,4 +490,64 @@ async function paperOrder({symbol,asset,side,quantity,price,feeRate=0.001}){
   }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
 }
 
-module.exports={initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo};
+// ------------------------------------------------------------
+// SIMULADOR B3 — conta e operações (dinheiro simulado)
+// ------------------------------------------------------------
+
+const B3_CAMPOS=`id,contrato,lado,quantidade,preco_entrada::float8 AS entrada,referencia_entrada::float8 AS referencia,stop::float8,alvo::float8,preco_saida::float8 AS saida,saida_tipo,pontos::float8,resultado_bruto::float8 AS bruto,custos::float8,resultado::float8,estado,texto,aberta_em,fechada_em`;
+function bancoB3(){const db=database();if(!db)throw Object.assign(new Error('Banco de dados não configurado. O simulador B3 precisa do PostgreSQL para guardar as operações.'),{statusCode:409});return db}
+
+async function b3Conta(){
+  const db=bancoB3();
+  return (await db.query('SELECT saldo_inicial::float8 AS "saldoInicial",saldo::float8,config,atualizada_em FROM b3_conta WHERE id=1')).rows[0];
+}
+async function b3Abertas(){
+  return (await bancoB3().query(`SELECT ${B3_CAMPOS} FROM b3_operacoes WHERE estado='ABERTA' ORDER BY aberta_em`)).rows;
+}
+async function b3Operacao(id){
+  return (await bancoB3().query(`SELECT ${B3_CAMPOS} FROM b3_operacoes WHERE id=$1`,[id])).rows[0]||null;
+}
+async function b3FechadasDesde(desde){
+  return (await bancoB3().query(`SELECT ${B3_CAMPOS} FROM b3_operacoes WHERE estado='FECHADA' AND fechada_em>=$1 ORDER BY fechada_em DESC`,[desde])).rows;
+}
+async function b3Historico(limit=30){
+  return (await bancoB3().query(`SELECT ${B3_CAMPOS} FROM b3_operacoes WHERE estado='FECHADA' ORDER BY fechada_em DESC LIMIT $1`,[Math.min(Math.max(Number(limit)||30,1),200)])).rows;
+}
+/** Abre a posição. Se já existe uma aberta no contrato, o índice único recusa
+ *  e a mensagem diz o que fazer, em vez de virar erro genérico. */
+async function b3Abrir(o){
+  try{
+    return (await bancoB3().query(`INSERT INTO b3_operacoes(contrato,lado,quantidade,preco_entrada,referencia_entrada,stop,alvo,texto) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING ${B3_CAMPOS}`,[o.contrato,o.lado,o.quantidade,o.entrada,o.referencia,o.stop,o.alvo,o.texto||''])).rows[0];
+  }catch(error){
+    if(error.code==='23505')throw Object.assign(new Error(`Já existe posição aberta em ${o.contrato}. Zere antes de abrir outra.`),{statusCode:409});
+    throw error;
+  }
+}
+/** Fecha uma vez só: o UPDATE só pega posição ABERTA, e o saldo só muda se ele
+ *  pegou. Dois fechamentos ao mesmo tempo não pagam o resultado duas vezes. */
+async function b3Fechar(id,{saida,tipo,pontos,bruto,custos,resultado,texto,em}){
+  const db=bancoB3();const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    const r=await client.query(`UPDATE b3_operacoes SET estado='FECHADA',preco_saida=$2,saida_tipo=$3,pontos=$4,resultado_bruto=$5,custos=$6,resultado=$7,texto=CASE WHEN $8::text='' THEN texto ELSE texto||' '||$8::text END,fechada_em=$9 WHERE id=$1 AND estado='ABERTA' RETURNING id`,[id,saida,tipo,pontos,bruto,custos,resultado,texto||'',em||new Date()]);
+    if(r.rowCount===1)await client.query('UPDATE b3_conta SET saldo=saldo+$1,atualizada_em=NOW() WHERE id=1',[resultado]);
+    await client.query('COMMIT');
+    return r.rowCount===1;
+  }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
+}
+async function b3SalvarConfig(config){
+  await bancoB3().query('UPDATE b3_conta SET config=$1,atualizada_em=NOW() WHERE id=1',[config]);
+}
+/** Recomeça do zero: apaga as operações simuladas e põe o saldo novo. */
+async function b3Reiniciar(saldo,config){
+  const db=bancoB3();const client=await db.connect();
+  try{
+    await client.query('BEGIN');
+    await client.query('DELETE FROM b3_operacoes');
+    await client.query('UPDATE b3_conta SET saldo_inicial=$1,saldo=$1,config=$2,atualizada_em=NOW() WHERE id=1',[saldo,config]);
+    await client.query('INSERT INTO audit_log(event,details) VALUES($1,$2)',['b3_reiniciar',{saldo}]);
+    await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error}finally{client.release()}
+}
+
+module.exports={initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo,b3Conta,b3Abertas,b3Operacao,b3FechadasDesde,b3Historico,b3Abrir,b3Fechar,b3SalvarConfig,b3Reiniciar};

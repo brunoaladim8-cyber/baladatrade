@@ -11,7 +11,8 @@ const {lerPosicao,perdaDoDia}=require('./resultado');
 const {ordensDaMesa,resumoDoGuardiao,ordemDoGuardiao}=require('./guardiao-do-lucro');
 const {rodarMesa}=require('./comite');
 const {normalizarConfig,escolherCandidato,precosDoTrade,decidir:decidirRobo,contarPosicoes,minhasOrdens,entradasVencidas,CONFIG_PADRAO}=require('./robo');
-const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo}=require('./db');
+const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo,b3Conta,b3Abertas,b3Operacao,b3FechadasDesde,b3Historico,b3Abrir,b3Fechar,b3SalvarConfig,b3Reiniciar}=require('./db');
+const B3=require('./b3-simulador');
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -526,6 +527,162 @@ async function mesaDeAgentes(market,plan){
     const radar=await marketRadar(30).catch(()=>[]);
     return await rodarMesa({mercado:market,radar,plano:plan&&typeof plan==='object'?{allowed:Boolean(plan.allowed)}:null,chamar:chamarClaudeJson});
   }finally{mesaOcupada=false;mesaUltima=Date.now();}
+}
+
+// ============================================================
+// SIMULADOR B3 — MINI ÍNDICE (WIN) E MINI DÓLAR (WDO) — 07/10/2026
+//
+// As regras moram em b3-simulador.js (função pura, com teste). Aqui fica só o
+// que precisa de rede e de banco: buscar o preço de referência, guardar a
+// operação e fechar o que bateu stop, alvo ou a hora da zeragem.
+//
+// Não existe ordem real neste caminho. Não há corretora ligada: tudo é
+// dinheiro simulado, e a resposta sempre volta com execucao: 'SIMULACAO'.
+// ============================================================
+const erroB3=(mensagem,status=409)=>Object.assign(new Error(mensagem),{statusCode:status});
+const cacheB3=new Map();
+const fmtB3=n=>Number(n).toLocaleString('pt-BR',{maximumFractionDigits:2});
+// O Yahoo não tem ponto de cotação em tempo real para isso; 15s de cache
+// segura a tela que atualiza sozinha sem martelar o provedor.
+async function cotacaoB3(codigo){
+  const spec=B3.CONTRATOS[codigo];if(!spec)throw erroB3('Contrato desconhecido.',400);
+  const guardado=cacheB3.get(codigo);
+  if(guardado&&Date.now()-guardado.em<15000)return guardado.dados;
+  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(spec.yahoo)}?interval=1m&range=5d`;
+  let payload={},ok=false;
+  try{const response=await fetch(url,{headers:{'user-agent':'BaladaTrade/1.0'},signal:AbortSignal.timeout(10000)});ok=response.ok;payload=await response.json().catch(()=>({}))}catch{ok=false}
+  const dados=B3.candlesDoYahoo(payload,spec.fator);
+  if(!ok||!dados.candles.length||dados.preco===null)throw erroB3(`Preço de referência do ${codigo} (${spec.referencia}) indisponível agora no Yahoo. Tente de novo em instantes.`);
+  cacheB3.set(codigo,{em:Date.now(),dados});
+  return dados;
+}
+async function cotacoesB3(avisos){
+  const cotacoes={};
+  await Promise.all(Object.keys(B3.CONTRATOS).map(async codigo=>{try{cotacoes[codigo]=await cotacaoB3(codigo)}catch(error){avisos.push(error.message)}}));
+  return cotacoes;
+}
+/** Fecha o que já saiu: stop, alvo ou zeragem. Roda antes de qualquer leitura
+ *  ou ação, para a tela nunca mostrar aberta uma posição que já acabou. */
+async function fecharSaidasB3(abertas,cotacoes,config,agora){
+  const fechadas=[];
+  for(const p of abertas){
+    const cot=cotacoes[p.contrato];if(!cot)continue;
+    const s=B3.avaliarSaida({contrato:p.contrato,lado:p.lado,stop:p.stop,alvo:p.alvo,abertaEmMs:new Date(p.aberta_em).getTime()},cot.candles,agora);
+    if(!s.sair)continue;
+    // O alvo é ordem limitada: sai no preço. Stop e zeragem são a mercado:
+    // um tick de deslize, como na vida real.
+    const saida=s.tipo==='ALVO'?s.preco:B3.precoDeExecucao(p.contrato,B3.oposto(p.lado),s.preco);
+    const r=B3.resultadoDaOperacao({contrato:p.contrato,lado:p.lado,quantidade:p.quantidade,entrada:p.entrada,saida,custoPorLado:config.custoPorLado[p.contrato]});
+    const ok=await b3Fechar(p.id,{saida,tipo:s.tipo,pontos:r.pontos,bruto:r.bruto,custos:r.custos,resultado:r.liquido,texto:s.texto,em:new Date(s.em)});
+    if(ok)fechadas.push({id:p.id,contrato:p.contrato,tipo:s.tipo,saida,resultado:r.liquido,texto:s.texto});
+  }
+  return fechadas;
+}
+const margemB3=posicoes=>posicoes.reduce((soma,p)=>soma+p.quantidade*B3.CONTRATOS[p.contrato].margem,0);
+async function estadoB3(){
+  const agora=Date.now(),avisos=[];
+  const conta0=await b3Conta(),config=B3.normalizarConfig(conta0.config);
+  const cotacoes=await cotacoesB3(avisos);
+  const fechadasAgora=await fecharSaidasB3(await b3Abertas(),cotacoes,config,agora);
+  const [conta,abertas,fechadasHoje,historico]=await Promise.all([b3Conta(),b3Abertas(),b3FechadasDesde(new Date(B3.inicioDoDiaMs(agora))),b3Historico(30)]);
+  const contratos={};
+  for(const codigo of Object.keys(B3.CONTRATOS)){
+    const spec=B3.CONTRATOS[codigo],cot=cotacoes[codigo],ultimo=cot?.candles.at(-1);
+    const doPregao=ultimo?cot.candles.filter(k=>k.time>=B3.inicioDoDiaMs(ultimo.time)):[];
+    contratos[codigo]={
+      codigo,nome:spec.nome,valorPonto:spec.valorPonto,tick:spec.tick,margem:spec.margem,referencia:spec.referencia,abre:spec.abre,zera:spec.zera,
+      preco:cot?B3.precoDeReferencia(codigo,cot.preco):null,
+      variacaoPct:cot?.fechamentoAnterior?Number(((cot.preco/cot.fechamentoAnterior-1)*100).toFixed(2)):null,
+      atualizadoEm:ultimo?new Date(ultimo.time).toISOString():null,
+      idadeMin:ultimo?Math.max(0,Math.round((agora-ultimo.time)/60000)):null,
+      pregao:B3.pregao(codigo,agora),
+      grafico:B3.agrupar(doPregao,5).slice(-100).map(k=>({time:Math.floor(k.time/1000),open:B3.arredondaTick(k.open,spec.tick),high:B3.arredondaTick(k.high,spec.tick),low:B3.arredondaTick(k.low,spec.tick),close:B3.arredondaTick(k.close,spec.tick)})),
+    };
+  }
+  const posicoes=abertas.map(p=>{
+    const preco=contratos[p.contrato].preco;
+    const aberto=preco===null?null:B3.resultadoDaOperacao({contrato:p.contrato,lado:p.lado,quantidade:p.quantidade,entrada:p.entrada,saida:preco,custoPorLado:config.custoPorLado[p.contrato]});
+    return {...p,precoAtual:preco,aberto};
+  });
+  const margemEmUso=margemB3(posicoes),resultadoAberto=Math.round(posicoes.reduce((s,p)=>s+(p.aberto?.liquido||0),0)*100)/100;
+  return {
+    conta:{saldoInicial:conta.saldoInicial,saldo:conta.saldo,margemEmUso,livre:Math.round((conta.saldo-margemEmUso)*100)/100,resultadoAberto,patrimonio:Math.round((conta.saldo+resultadoAberto)*100)/100},
+    contratos,posicoes,dia:B3.resumoDoDia(fechadasHoje,config),historico,fechadasAgora,config,avisos,
+    custosIncluidos:config.custoPorLado.WIN>0||config.custoPorLado.WDO>0,
+    execucao:'SIMULACAO',
+    fonte:'Preço de referência: Ibovespa à vista (WIN) e dólar comercial × 1.000 (WDO), pelo Yahoo. Pode ter atraso. O contrato de verdade tem diferença de juros (no WIN, perto de 0,3%).',
+    atualizadoEm:new Date(agora).toISOString(),
+  };
+}
+async function ordemB3(data={}){
+  const agora=Date.now(),contrato=String(data.contrato||'').toUpperCase();
+  if(!B3.CONTRATOS[contrato])throw erroB3('Escolha WIN (mini índice) ou WDO (mini dólar).',400);
+  const conta=await b3Conta(),config=B3.normalizarConfig(conta.config);
+  const cot=await cotacaoB3(contrato);
+  // Fecha antes o que já tinha saído: senão a trava do dia e a posição aberta
+  // seriam julgadas com o estado de minutos atrás.
+  await fecharSaidasB3(await b3Abertas(),{[contrato]:cot},config,agora);
+  const [conta2,abertas,fechadasHoje]=await Promise.all([b3Conta(),b3Abertas(),b3FechadasDesde(new Date(B3.inicioDoDiaMs(agora)))]);
+  const ultimo=cot.candles.at(-1);
+  const v=B3.validarOrdem(data,{config,saldo:conta2.saldo,margemEmUso:margemB3(abertas),resultadoHoje:B3.resumoDoDia(fechadasHoje,config).resultado,temAberta:abertas.some(p=>p.contrato===contrato),pregao:B3.pregao(contrato,agora),idadePrecoMin:ultimo?(agora-ultimo.time)/60000:Infinity});
+  if(!v.ok)throw erroB3(v.motivo);
+  const {lado,quantidade,stopPontos,alvoPontos}=v.ordem;
+  const referencia=B3.precoDeReferencia(contrato,cot.preco),entrada=B3.precoDeExecucao(contrato,lado,referencia);
+  const precos=B3.precosDaOrdem(contrato,lado,entrada,stopPontos,alvoPontos);
+  const risco=B3.riscoEmReais(contrato,quantidade,stopPontos,config.custoPorLado[contrato]);
+  const texto=`${lado==='COMPRA'?'Compra':'Venda'} de ${quantidade} ${contrato} a ${fmtB3(entrada)} (referência ${fmtB3(referencia)} + 1 tick de deslize). Stop ${fmtB3(precos.stop)}${precos.alvo?`, alvo ${fmtB3(precos.alvo)}`:', sem alvo'}. Se o stop bater: −R$ ${fmtB3(risco)}.`;
+  const operacao=await b3Abrir({contrato,lado,quantidade,entrada,referencia,stop:precos.stop,alvo:precos.alvo,texto});
+  return {ok:true,operacao,texto,risco,execucao:'SIMULACAO'};
+}
+async function zerarB3(id){
+  if(!Number.isInteger(id)||id<1)throw erroB3('Posição inválida.',400);
+  const p=await b3Operacao(id);
+  if(!p||p.estado!=='ABERTA')throw erroB3('Essa posição não está mais aberta.',404);
+  const config=B3.normalizarConfig((await b3Conta()).config),agora=Date.now();
+  const cot=await cotacaoB3(p.contrato);
+  // Se o stop ou o alvo já tinham batido, vale o que aconteceu, não o preço de agora.
+  const antes=await fecharSaidasB3([p],{[p.contrato]:cot},config,agora);
+  if(antes.length)return {ok:true,jaTinhaSaido:true,...antes[0],execucao:'SIMULACAO'};
+  const saida=B3.precoDeExecucao(p.contrato,B3.oposto(p.lado),cot.preco);
+  const r=B3.resultadoDaOperacao({contrato:p.contrato,lado:p.lado,quantidade:p.quantidade,entrada:p.entrada,saida,custoPorLado:config.custoPorLado[p.contrato]});
+  const ok=await b3Fechar(p.id,{saida,tipo:'MANUAL',pontos:r.pontos,bruto:r.bruto,custos:r.custos,resultado:r.liquido,texto:'Zerada na mão.',em:new Date(agora)});
+  if(!ok)throw erroB3('Essa posição acabou de ser fechada por outra ação.',409);
+  return {ok:true,id:p.id,contrato:p.contrato,tipo:'MANUAL',saida,resultado:r.liquido,execucao:'SIMULACAO'};
+}
+async function ajustesB3(data={}){
+  const atual=B3.normalizarConfig((await b3Conta()).config);
+  const escolhe=(v,padrao)=>v===undefined||v===null||v===''?padrao:v;
+  const nova=B3.normalizarConfig({...atual,limitePerdaDia:escolhe(data.limitePerdaDia,atual.limitePerdaDia),maxContratos:{WIN:escolhe(data.maxWIN,atual.maxContratos.WIN),WDO:escolhe(data.maxWDO,atual.maxContratos.WDO)},custoPorLado:{WIN:escolhe(data.custoWIN,atual.custoPorLado.WIN),WDO:escolhe(data.custoWDO,atual.custoPorLado.WDO)}});
+  await b3SalvarConfig(nova);
+  return {ok:true,config:nova};
+}
+async function reiniciarB3(data={}){
+  const saldo=Number(data.saldoInicial);
+  if(!(saldo>=100&&saldo<=1000000))throw erroB3('Saldo inicial entre R$ 100 e R$ 1.000.000.',400);
+  const config=B3.normalizarConfig({...B3.normalizarConfig((await b3Conta()).config),saldoInicial:saldo});
+  await b3Reiniciar(saldo,config);
+  return {ok:true,saldo,config};
+}
+// Uma leitura por vez, com 20s de folga: clique repetido não vira conta de API.
+let leituraB3Ocupada=false,leituraB3Ultima=0;
+async function leituraB3(codigo){
+  if(!B3.CONTRATOS[codigo])throw erroB3('Escolha WIN ou WDO para a leitura.',400);
+  if(!process.env.ANTHROPIC_API_KEY)throw erroB3('Agente Anthropic sem ANTHROPIC_API_KEY no Railway.');
+  if(leituraB3Ocupada)throw erroB3('Já tem uma leitura em andamento. Aguarde terminar.',429);
+  const espera=20000-(Date.now()-leituraB3Ultima);
+  if(espera>0)throw erroB3(`Aguarde ${Math.ceil(espera/1000)}s para pedir outra leitura.`,429);
+  leituraB3Ocupada=true;
+  try{
+    const cot=await cotacaoB3(codigo);
+    const resumo=B3.resumoTecnico(codigo,cot.candles,cot.fechamentoAnterior,Date.now());
+    if(resumo.semDados)throw erroB3(resumo.motivo);
+    const leitura=await chamarClaudeJson({
+      system:'Você é o analista do BaladaTrade para o mini índice (WIN) e o mini dólar (WDO) da B3, dentro de um SIMULADOR com dinheiro de mentira. Leia só os números recebidos: são do preço de referência (Ibovespa à vista para o WIN, dólar comercial × 1.000 para o WDO). Não invente notícia, evento ou dado. Não prometa lucro. Português simples, frases curtas, para quem está treinando. Suporte e resistência são preços tirados dos dados (máxima, mínima, médias). O plano para treinar diz o que esperar antes de entrar e a distância do stop em pontos.',
+      prompt:`Leia o ${codigo} agora e devolva o JSON pedido. Dados: ${JSON.stringify(resumo)}`,
+      schema:B3.LEITURA_SCHEMA,maxTokens:700,
+    });
+    return {leitura,resumo,execucao:'SIMULACAO',aviso:'Leitura educacional sobre o preço de referência. Não é recomendação de investimento.',geradaEm:new Date().toISOString()};
+  }finally{leituraB3Ocupada=false;leituraB3Ultima=Date.now();}
 }
 
 async function spotAgentAudit(plan,market={}){
@@ -1516,6 +1673,12 @@ async function api(req, res, pathname) {
       if(!(stopDollar>0)||!(targetDollar>0))return json(res,400,{error:'Stop e take em dólar devem ser maiores que zero.'});
       return json(res,200,{instrument:'MNQ',timeframe:'15m',...backtest(candles,{riskBudget:stopDollar,stopDollar,targetDollar,maxMicros,bosBufferAtr:Number(data.bosBufferAtr||.1)}),candles:candles.length,execution:'SIMULATION_ONLY',warning:'Resultado histórico não garante resultado futuro. Dados públicos podem conter atrasos ou lacunas.'});
     }
+    if (pathname === '/api/b3/estado' && req.method === 'GET') return json(res,200,await estadoB3());
+    if (pathname === '/api/b3/ordem' && req.method === 'POST') return json(res,200,await ordemB3(await body(req)));
+    if (pathname === '/api/b3/zerar' && req.method === 'POST') {const data=await body(req);return json(res,200,await zerarB3(Number(data.id)));}
+    if (pathname === '/api/b3/ajustes' && req.method === 'POST') return json(res,200,await ajustesB3(await body(req)));
+    if (pathname === '/api/b3/reiniciar' && req.method === 'POST') {const data=await body(req);if(data.confirmar!=='REINICIAR')return json(res,400,{error:'Para recomeçar a conta simulada, confirme com REINICIAR.'});return json(res,200,await reiniciarB3(data));}
+    if (pathname === '/api/ai/b3-leitura' && req.method === 'POST') {const data=await body(req);return json(res,200,await leituraB3(String(data.contrato||'').toUpperCase()));}
     if (pathname === '/api/market/radar' && req.method === 'GET') {const coins=await marketRadar(Number(new URL(req.url,'http://localhost').searchParams.get('limit')||50));return json(res,200,{coins,alerts:marketAlerts(coins),updatedAt:new Date().toISOString()});}
     if (pathname === '/api/market/symbols' && req.method === 'GET') {
       const response=await fetchPublico(`${marketBase()}/api/v3/exchangeInfo`),data=await response.json();

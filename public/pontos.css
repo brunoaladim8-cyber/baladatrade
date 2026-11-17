@@ -1,0 +1,58 @@
+/* JOGO DOS PONTOS — usa a base do superpower.css e acrescenta o placar. */
+.pt-links { display: flex; gap: 14px; }
+.pt-placar { display: grid; grid-template-columns: 1.1fr 1.4fr 1fr; gap: 22px; }
+.pt-pontos { font-family: var(--num); font-size: clamp(48px, 6vw, 84px); font-weight: 800; line-height: 1; margin: 10px 0 4px; text-shadow: 0 0 30px currentColor; }
+.pt-reais { font-family: var(--num); font-size: 20px; color: var(--suave); }
+.pt-numeros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px 10px; align-content: center; }
+.pt-numeros small, .pt-regras small { display: block; font-size: 10px; letter-spacing: 0.16em; color: var(--suave); }
+.pt-numeros b { font-family: var(--num); font-size: 20px; }
+
+.pt-termo-barra { position: relative; height: 22px; border-radius: 11px; background: rgba(255, 255, 255, 0.06); margin: 18px 0 10px; overflow: visible; }
+.pt-termo-barra i { position: absolute; left: 0; top: 0; bottom: 0; width: var(--w, 0%); border-radius: 11px; background: linear-gradient(90deg, var(--ciano), var(--ouro) 70%, var(--venda)); box-shadow: 0 0 18px rgba(255, 211, 77, 0.4); transition: width 1s; }
+.pt-termo-100 { position: absolute; left: 66.6%; top: -16px; font-size: 10px; color: var(--suave); border-left: 1px dashed var(--suave); padding-left: 4px; height: 40px; }
+.pt-termo-num b { font-family: var(--num); font-size: 30px; color: var(--ouro); }
+.pt-termo-num small { display: block; color: var(--suave); font-size: 12px; }
+.pt-faixa-dia { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 11px; color: var(--suave); }
+.pt-faixa-trilho { position: relative; flex: 1; height: 8px; border-radius: 8px; background: linear-gradient(90deg, rgba(255, 77, 109, 0.5), rgba(255, 176, 32, 0.4), rgba(31, 224, 143, 0.5)); }
+.pt-faixa-trilho i { position: absolute; top: -5px; left: var(--p, 50%); width: 4px; height: 18px; margin-left: -2px; border-radius: 3px; background: #fff; box-shadow: 0 0 10px #fff; transition: left 1s; }
+
+.pt-regras { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0; }
+.pt-regras > div { padding: 12px; border-radius: 14px; background: rgba(0, 0, 0, 0.3); border: 1px solid var(--borda); }
+.pt-regras b { display: block; font-family: var(--num); font-size: 26px; color: var(--ouro); margin: 4px 0; }
+.pt-regras span { font-size: 11px; color: var(--suave); }
+.pt-campos4 { grid-template-columns: repeat(4, 1fr); }
+.pt-calc { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 16px; font-size: 13px; color: var(--suave); }
+.pt-calc b { font-family: var(--num); color: var(--texto); font-size: 16px; }
+.pt-calc .alerta { grid-column: 1 / -1; color: var(--venda); }
+
+.pt-regua { font-family: var(--num); font-size: 14px; padding: 8px 12px; border-radius: 12px; border: 1px solid rgba(255, 211, 77, 0.4); color: var(--ouro); white-space: nowrap; }
+
+.pt-barras { display: grid; gap: 8px; margin-top: 12px; }
+.pt-barra { display: grid; grid-template-columns: 74px 1fr 120px; align-items: center; gap: 10px; font-size: 12px; }
+.pt-barra span:first-child { font-family: var(--num); color: var(--suave); }
+.pt-barra .trilho { position: relative; height: 16px; border-radius: 6px; background: rgba(255, 255, 255, 0.04); }
+.pt-barra .trilho i { position: absolute; top: 0; bottom: 0; left: 50%; width: var(--w, 0%); border-radius: 6px; background: var(--cor); box-shadow: 0 0 10px var(--cor); transition: width 0.8s, left 0.8s; }
+.pt-barra .trilho.neg i { left: calc(50% - var(--w, 0%)); }
+.pt-barra .trilho.cheia i { left: 0; }
+.pt-barra b { font-family: var(--num); text-align: right; }
+
+.pt-conta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 6px 0 4px; }
+.pt-conta div { padding: 10px; border-radius: 12px; background: rgba(0, 0, 0, 0.3); }
+.pt-conta small { display: block; font-size: 10px; letter-spacing: 0.16em; color: var(--suave); }
+.pt-conta b { font-family: var(--num); font-size: 18px; }
+.sp-campos input[readonly] { color: var(--ouro); }
+.pt-compra { background: rgba(31, 224, 143, 0.12); border-color: rgba(31, 224, 143, 0.6); color: var(--compra); font-weight: 800; }
+.pt-venda { background: rgba(255, 77, 109, 0.12); border-color: rgba(255, 77, 109, 0.6); color: var(--venda); font-weight: 800; }
+.pt-pos { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; align-items: center; padding: 14px; border-radius: 14px; border: 1px solid var(--cor, var(--borda)); background: rgba(0, 0, 0, 0.35); margin-top: 10px; }
+.pt-pos small { display: block; color: var(--suave); font-size: 12px; }
+.pt-pos .pt-vivo { font-family: var(--num); font-size: 30px; font-weight: 800; color: var(--cor); text-shadow: 0 0 18px var(--cor); text-align: right; }
+
+@media (max-width: 1100px) {
+  .pt-placar { grid-template-columns: 1fr; }
+  .pt-numeros { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .pt-regras, .pt-campos4, .pt-conta { grid-template-columns: 1fr 1fr; }
+  .pt-pos { grid-template-columns: 1fr; }
+  .pt-links { flex-direction: column; gap: 4px; }
+}

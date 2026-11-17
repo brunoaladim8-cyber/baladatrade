@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jogo dos Pontos · WIN</title>
+  <meta name="theme-color" content="#05070d">
+  <link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg">
+  <link rel="stylesheet" href="superpower.css?v=2">
+  <link rel="stylesheet" href="pontos.css?v=1">
+</head>
+<body>
+  <div class="sp-fundo" aria-hidden="true"><div class="sp-grade"></div><div class="sp-aurora"></div></div>
+
+  <header class="sp-topo">
+    <nav class="pt-links"><a class="sp-voltar" href="/">← BaladaTrade</a><a class="sp-voltar" href="superpower.html">⚡ Super Power</a></nav>
+    <div class="sp-marca"><span class="sp-raio">◎</span> JOGO DOS PONTOS <small>quanto o índice anda · WIN ao vivo no simulador</small></div>
+    <div class="sp-relogio"><span id="relogio">--:--:--</span><small id="atualizado">aguardando dados</small></div>
+  </header>
+
+  <div class="sp-faixa">⚠ Preço de referência do Yahoo (Ibovespa à vista), com atraso. A variação em pontos anda junto com o WIN, mas não é o book da corretora. Operações aqui são SIMULADAS.</div>
+  <div class="sp-erro hidden" id="erro"></div>
+
+  <main class="sp-palco">
+    <!-- PLACAR -->
+    <section class="pt-placar">
+      <div class="sp-painel pt-grande">
+        <div class="sp-rotulo">ANDOU HOJE (desde a abertura) <span class="sp-pregao" id="pregao">—</span></div>
+        <div class="pt-pontos" id="variacao">—</div>
+        <div class="pt-reais" id="variacaoReais">—</div>
+        <p class="sp-motivo" id="leitura">—</p>
+      </div>
+      <div class="sp-painel pt-numeros">
+        <div><small>AGORA</small><b id="atual">—</b></div>
+        <div><small>ABERTURA</small><b id="abertura">—</b></div>
+        <div><small>MÁXIMA</small><b class="compra-t" id="maxima">—</b></div>
+        <div><small>MÍNIMA</small><b class="venda-t" id="minima">—</b></div>
+        <div><small>AMPLITUDE</small><b id="amplitude">—</b></div>
+        <div><small>DESDE O FECH. ANTERIOR</small><b id="desdeFech">—</b></div>
+        <div><small>GAP NA ABERTURA</small><b id="gap">—</b></div>
+        <div><small>POSIÇÃO NA FAIXA</small><b id="posicao">—</b></div>
+      </div>
+      <div class="sp-painel pt-termo">
+        <div class="sp-rotulo">TERMÔMETRO DO DIA</div>
+        <div class="pt-termo-barra"><i id="termoBarra"></i><span class="pt-termo-100">média</span></div>
+        <div class="pt-termo-num"><b id="usado">—</b><small id="media">—</small></div>
+        <div class="pt-faixa-dia"><span>mín</span><div class="pt-faixa-trilho"><i id="faixaPonto"></i></div><span>máx</span></div>
+      </div>
+    </section>
+
+    <!-- REGRAS DO CONTRATO + CALCULADORA -->
+    <section class="sp-duas">
+      <div class="sp-painel">
+        <div class="sp-rotulo">REGRAS DO CONTRATO WIN</div>
+        <div class="pt-regras">
+          <div><small>VALOR DO PONTO</small><b id="rPonto">—</b><span>por contrato</span></div>
+          <div><small>TICK (variação mínima)</small><b id="rTick">—</b><span id="rTickR">—</span></div>
+          <div><small>GARANTIA DAY TRADE</small><b id="rMargem">—</b><span>por contrato (B3; a corretora pode pedir mais)</span></div>
+        </div>
+        <p class="sp-motivo">Exemplo: 100 pontos com 1 contrato = R$ 20. Com 5 contratos, os mesmos 100 pontos = R$ 100. A garantia fica presa enquanto a posição está aberta e volta quando você zera.</p>
+      </div>
+      <div class="sp-painel">
+        <div class="sp-rotulo">CALCULADORA DE CONTRATOS</div>
+        <div class="sp-campos pt-campos4">
+          <label>Capital (R$)<input id="cCapital" type="number" min="0" step="50" value="1000"></label>
+          <label>Contratos<input id="cQtd" type="number" min="1" step="1" value="1"></label>
+          <label>Garantia/contrato<input id="cMargem" type="number" min="1" step="5" value="155"></label>
+          <label>Pontos<input id="cPts" type="number" step="5" value="100"></label>
+        </div>
+        <div class="pt-calc" id="calc">—</div>
+      </div>
+    </section>
+
+    <!-- GRÁFICO COM AS MARCAS + RÉGUA -->
+    <section class="sp-painel">
+      <div class="sp-cab"><div><div class="sp-rotulo">GRÁFICO DO DIA COM AS MARCAS</div><small>Linhas: abertura (ciano), máxima (verde), mínima (vermelho), fechamento anterior (cinza), faixas de ±500 e ±1000 pontos da abertura (dourado). <b>Régua:</b> clique em dois pontos do gráfico para medir a distância.</small></div>
+        <div class="pt-regua" id="regua">Régua: clique no 1º ponto</div></div>
+      <div class="sp-grafico grande" id="gDia"></div>
+    </section>
+
+    <!-- POR HORA + DIAS ANTERIORES -->
+    <section class="sp-duas">
+      <div class="sp-painel">
+        <div class="sp-rotulo">PONTOS POR HORA (hoje)</div>
+        <div class="pt-barras" id="horas"></div>
+      </div>
+      <div class="sp-painel">
+        <div class="sp-rotulo">AMPLITUDE DOS ÚLTIMOS PREGÕES</div>
+        <div class="pt-barras" id="dias"></div>
+      </div>
+    </section>
+
+    <!-- SIMULADOR AO VIVO -->
+    <section class="sp-painel pt-sim">
+      <div class="sp-cab"><div><div class="sp-rotulo">SIMULADOR AO VIVO · segue o WIN</div><small>Usa o Simulador B3 do BaladaTrade: cobra a garantia, exige stop, aplica 1 tick de deslize e zera no fim do pregão. Dinheiro de mentira.</small></div></div>
+      <div class="pt-conta" id="conta">—</div>
+      <div class="sp-campos pt-campos4">
+        <label>Contratos<input id="oQtd" type="number" min="1" step="1" value="1"></label>
+        <label>Stop (pts)<input id="oStop" type="number" min="25" step="5" value="100"></label>
+        <label>Alvo (pts)<input id="oAlvo" type="number" min="0" step="5" value="100"></label>
+        <label>Garantia que prende<input id="oGarantia" type="text" readonly value="—"></label>
+      </div>
+      <div class="sp-risco" id="oRisco">—</div>
+      <div class="sp-botoes">
+        <button class="sp-btn pt-compra" id="btnCompra">▲ COMPRAR</button>
+        <button class="sp-btn pt-venda" id="btnVenda">▼ VENDER</button>
+      </div>
+      <p class="sp-msg" id="msg"></p>
+      <div id="posicoes"></div>
+    </section>
+
+    <footer class="sp-rodape" id="fonte">—</footer>
+  </main>
+
+  <script src="vendor-lightweight-charts.js?v=14"></script>
+  <script src="pontos.js?v=1"></script>
+</body>
+</html>

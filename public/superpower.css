@@ -51,6 +51,7 @@ body.sinal-venda .sp-aurora { background: radial-gradient(60% 45% at 50% 0%, rgb
 /* ---------- topo ---------- */
 .sp-topo { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; }
 .sp-voltar { color: var(--suave); text-decoration: none; font-size: 13px; }
+.pt-links { display: flex; gap: 14px; }
 .sp-voltar:hover { color: var(--ciano); }
 .sp-marca { font-size: 22px; letter-spacing: 0.18em; font-weight: 700; text-shadow: 0 0 18px rgba(255, 211, 77, 0.35); }
 .sp-marca small { display: block; font-size: 11px; letter-spacing: 0.25em; color: var(--suave); font-weight: 400; }

@@ -13,6 +13,11 @@ const {rodarMesa}=require('./comite');
 const {normalizarConfig,escolherCandidato,precosDoTrade,decidir:decidirRobo,contarPosicoes,minhasOrdens,entradasVencidas,CONFIG_PADRAO}=require('./robo');
 const {initDatabase,databaseHealth,saveSnapshot,history,portfolioBaseline,paperData,paperOrder,ledgerData,addLedgerEntry,deleteLedgerEntry,importLedgerEntries,saveMarketScan,marketScanHistory,saveTradePlan,tradePlanHistory,closeTradePlan,saveAlerts,alertHistory,savePositionWatch,positionWatches,updatePositionWatch,salvarDecisao,marcarDecisaoEnviada,decisoesDoRobo,ordensDoRoboHoje,estadoDoRobo,salvarEstadoDoRobo,abrirPosicao,posicoesEmAberto,atualizarPosicao,posicoesFechadasHoje,posicoesDoRobo,b3Conta,b3Abertas,b3Operacao,b3FechadasDesde,b3Historico,b3Abrir,b3Fechar,b3SalvarConfig,b3Reiniciar}=require('./db');
 const B3=require('./b3-simulador');
+// Super Power (monitor de força do WIN): as rotas moram em forca-rotas.js.
+// Criadas na primeira chamada porque dependem de funções declaradas abaixo.
+const {criarRotasForca}=require('./forca-rotas');
+let rotasForcaProntas=null;
+function rotasForca(){return rotasForcaProntas||(rotasForcaProntas=criarRotasForca({B3,cotacaoB3,ordemB3,chamarClaudeJson,json,body}))}
 
 const root = path.join(__dirname, 'public');
 const types = {'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json'};
@@ -1673,6 +1678,7 @@ async function api(req, res, pathname) {
       if(!(stopDollar>0)||!(targetDollar>0))return json(res,400,{error:'Stop e take em dólar devem ser maiores que zero.'});
       return json(res,200,{instrument:'MNQ',timeframe:'15m',...backtest(candles,{riskBudget:stopDollar,stopDollar,targetDollar,maxMicros,bosBufferAtr:Number(data.bosBufferAtr||.1)}),candles:candles.length,execution:'SIMULATION_ONLY',warning:'Resultado histórico não garante resultado futuro. Dados públicos podem conter atrasos ou lacunas.'});
     }
+    if (pathname.startsWith('/api/forca/')) return await rotasForca()(req,res,pathname);
     if (pathname === '/api/b3/estado' && req.method === 'GET') return json(res,200,await estadoB3());
     if (pathname === '/api/b3/ordem' && req.method === 'POST') return json(res,200,await ordemB3(await body(req)));
     if (pathname === '/api/b3/zerar' && req.method === 'POST') {const data=await body(req);return json(res,200,await zerarB3(Number(data.id)));}

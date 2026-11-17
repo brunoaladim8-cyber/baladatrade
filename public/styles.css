@@ -293,3 +293,10 @@ input,select,textarea{border-color:#c7d4e5}
 .b3-leitura-topo{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
 .b3-fonte{font-size:12px;color:var(--muted);margin:16px 4px}
 @media(max-width:900px){.b3-cotas{grid-template-columns:1fr}.b3-cota strong{font-size:26px}}
+
+/* Atalho para o Super Power (16/11/2026). Fica fora do <nav> de propósito:
+   não é uma tela do app, é uma página própria, e o organizador do menu só
+   mexe em .nav. */
+.sp-atalho{display:block;margin:10px 12px 14px;padding:12px 14px;border-radius:14px;background:linear-gradient(135deg,#0b1220,#16233b);border:1px solid rgba(255,211,77,.45);color:#ffd34d;font-weight:700;letter-spacing:.06em;text-decoration:none;box-shadow:0 0 22px rgba(255,211,77,.18)}
+.sp-atalho small{display:block;color:#8a97ad;font-weight:400;font-size:11px;letter-spacing:.02em;margin-top:2px}
+.sp-atalho:hover{box-shadow:0 0 30px rgba(255,211,77,.35)}

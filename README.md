@@ -206,6 +206,15 @@ ordens abertas na Binance. Só um humano solta depois, em
 | `POST /api/robo/conferir` | Confere as posições na Binance agora |
 | `POST /api/robo/reconciliar` | Reconciliação completa contra a corretora |
 
+## ⚡ Super Power: monitor de força do WIN (16/11/2026)
+
+Página própria em `/superpower.html` (atalho no topo do menu). Mede a força compradora/vendedora das 8 ações que mais pesam no Ibovespa (VALE3, ITUB4, PETR4, BBDC4, BBAS3, WEGE3, B3SA3, ABEV3), pondera pelo peso de cada uma e mostra quanto cada ação empurra o WIN.
+
+- **Telas:** WIN com a Força da Cesta embaixo (±40 = onde o sinal acende), medidor 3D, checklist do que decide, torres 3D de influência, mapa de calor do peso, força de cada ação no dia e um gráfico por ação com o volume pintado pela força de cada minuto.
+- **Sinal:** força além de ±40 **e** 60% do peso do mesmo lado. Depois a **mesa de agentes** (Touro × Urso × Risco) precisa concordar. Só então o botão **ATIVAR SCALP** acende, e o servidor confere de novo antes de mandar a ordem para o **simulador B3** (alvo, stop e contratos editáveis).
+- **Dado:** grátis (Yahoo), atrasado e **sem lado agressor**. A força é estimada por volume × fechamento no candle (`forca-cesta.js`). Quando o feed real (MT5) entrar, troca-se só `forcaDoCandle`.
+- Regras em `forca-cesta.js` (função pura, com teste), rotas em `forca-rotas.js`: `GET /api/forca/estado`, `POST /api/forca/mesa`, `POST /api/forca/ativar`.
+
 ## Simulador B3: mini índice e mini dólar (07/10/2026)
 
 Treino de **WIN** e **WDO** com dinheiro simulado e a regra do contrato de verdade. Aba **◆ Simulador B3**, no grupo Laboratório.

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Super Power · WINZ26</title>
+  <meta name="theme-color" content="#05070d">
+  <link rel="manifest" href="manifest.json"><link rel="icon" href="icon.svg">
+  <link rel="stylesheet" href="superpower.css?v=1">
+</head>
+<body>
+  <div class="sp-fundo" aria-hidden="true"><div class="sp-grade"></div><div class="sp-aurora"></div></div>
+
+  <!-- FITA: as 8 ações correndo, cor = força -->
+  <div class="sp-fita" aria-label="Cotações da cesta"><div class="sp-fita-trilho" id="fita"></div></div>
+
+  <header class="sp-topo">
+    <a class="sp-voltar" href="/">← BaladaTrade</a>
+    <div class="sp-marca"><span class="sp-raio">⚡</span> SUPER POWER <small>monitor de força do mini índice</small></div>
+    <div class="sp-relogio"><span id="relogio">--:--:--</span><small id="atualizado">aguardando dados</small></div>
+  </header>
+
+  <div class="sp-faixa" id="faixaAtraso">⚠ DADO ATRASADO E ESTIMADO (Yahoo grátis): estude e treine no simulador. Não opere dinheiro de verdade com esta tela até ligarmos o feed real (MT5).</div>
+  <div class="sp-erro hidden" id="erro"></div>
+
+  <main class="sp-palco">
+    <!-- HERÓI: o WIN e o veredito -->
+    <section class="sp-heroi">
+      <div class="sp-painel sp-win inclina-esq">
+        <div class="sp-rotulo">WINZ26 <span class="sp-pregao" id="pregao">—</span></div>
+        <div class="sp-preco" id="winPreco">—</div>
+        <div class="sp-var" id="winVar">—</div>
+        <div class="sp-mini-info"><span>últimos 15 min <b id="winJanela">—</b></span><span>1 ponto = R$ 0,20</span></div>
+      </div>
+
+      <div class="sp-painel sp-medidor">
+        <div class="sp-rotulo">FORÇA DA CESTA</div>
+        <div class="sp-disco" id="disco">
+          <div class="sp-disco-arco"></div>
+          <div class="sp-disco-zona compra"></div><div class="sp-disco-zona venda"></div>
+          <div class="sp-agulha" id="agulha"></div>
+          <div class="sp-disco-centro"><b id="forcaNum">—</b><small id="forcaLado">—</small></div>
+        </div>
+        <div class="sp-escala"><span>−100 vendedor</span><span>0</span><span>comprador +100</span></div>
+      </div>
+
+      <div class="sp-painel sp-veredito inclina-dir" id="veredito">
+        <div class="sp-rotulo">SINAL</div>
+        <div class="sp-sinal" id="sinalLado">—</div>
+        <p class="sp-motivo" id="sinalMotivo">—</p>
+        <ul class="sp-checklist" id="checklist"></ul>
+      </div>
+    </section>
+
+    <!-- LEGENDA: o que cada cor quer dizer -->
+    <section class="sp-legenda" aria-label="O que as cores dizem">
+      <span class="lg compra">VERDE: comprador mandando (fechou perto da máxima com volume)</span>
+      <span class="lg venda">VERMELHO: vendedor mandando</span>
+      <span class="lg espera">ÂMBAR: neutro ou esperar</span>
+      <span class="lg ouro">DOURADO: Força da Cesta</span>
+      <span class="lg ciano">CIANO: preço do WIN</span>
+    </section>
+
+    <!-- GRÁFICO PRINCIPAL -->
+    <section class="sp-painel sp-principal">
+      <div class="sp-cab"><div><div class="sp-rotulo">WIN × FORÇA DA CESTA</div><small>Candles do WIN (referência: Ibovespa à vista). Embaixo, a força minuto a minuto: barra verde = cesta comprando, vermelha = vendendo. As linhas ±40 são onde o sinal acende.</small></div></div>
+      <div class="sp-grafico grande" id="gWin"></div>
+    </section>
+
+    <!-- 3D: torres de influência + mapa de calor -->
+    <section class="sp-duas">
+      <div class="sp-painel">
+        <div class="sp-cab"><div><div class="sp-rotulo">TORRES DE INFLUÊNCIA 3D</div><small>Altura = quantos pontos da força cada ação empurra (peso no Ibov × força dela). Pra cima = puxa o índice pra cima.</small></div></div>
+        <div class="sp-torres" id="torres"></div>
+      </div>
+      <div class="sp-painel">
+        <div class="sp-cab"><div><div class="sp-rotulo">MAPA DE CALOR DO PESO</div><small>Tamanho = peso no Ibovespa. Cor = força. Quanto mais forte a cor, mais certeza do lado.</small></div></div>
+        <div class="sp-mapa" id="mapa"></div>
+        <div class="sp-cobertura" id="cobertura">—</div>
+      </div>
+    </section>
+
+    <!-- FORÇA DE CADA AÇÃO NO DIA -->
+    <section class="sp-painel">
+      <div class="sp-cab"><div><div class="sp-rotulo">FORÇA DE CADA AÇÃO AO LONGO DO DIA</div><small>Uma linha por ação. Quando várias sobem juntas acima de +40, a cesta inteira está comprando. Uma ação sozinha não é o índice.</small></div><div class="sp-chips" id="chipsLinhas"></div></div>
+      <div class="sp-grafico medio" id="gLinhas"></div>
+    </section>
+
+    <!-- GRADE DAS AÇÕES -->
+    <section>
+      <div class="sp-titulo-secao">AS 8 AÇÕES QUE MAIS PESAM <small>preço + volume pintado pela força de cada minuto</small></div>
+      <div class="sp-grade-acoes" id="gradeAcoes"></div>
+    </section>
+
+    <!-- SCALP + MESA -->
+    <section class="sp-duas">
+      <div class="sp-painel sp-scalp">
+        <div class="sp-rotulo">SCALP NO SIMULADOR</div>
+        <div class="sp-campos">
+          <label>Alvo (pts)<input id="alvo" type="number" min="25" step="5" value="100"></label>
+          <label>Stop (pts)<input id="stop" type="number" min="25" step="5" value="100"></label>
+          <label>Contratos<input id="qtd" type="number" min="1" max="5" step="1" value="1"></label>
+        </div>
+        <div class="sp-risco" id="risco">—</div>
+        <div class="sp-botoes">
+          <button class="sp-btn mesa" id="btnMesa">🧠 Chamar a mesa</button>
+          <button class="sp-btn ativar" id="btnAtivar" disabled>⚡ ATIVAR SCALP</button>
+        </div>
+        <p class="sp-motivo" id="ativarMotivo">O botão só acende quando a força E a mesa concordam.</p>
+        <p class="sp-msg" id="msg"></p>
+      </div>
+      <div class="sp-painel sp-mesa">
+        <div class="sp-rotulo">MESA DE AGENTES</div>
+        <div class="sp-vozes" id="vozes"><p class="muted">Ninguém falou ainda. Chame a mesa quando o sinal acender.</p></div>
+      </div>
+    </section>
+
+    <footer class="sp-rodape" id="fonte">—</footer>
+  </main>
+
+  <script src="vendor-lightweight-charts.js?v=14"></script>
+  <script src="superpower.js?v=1"></script>
+</body>
+</html>

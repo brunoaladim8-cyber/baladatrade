@@ -215,6 +215,15 @@ Página própria em `/superpower.html` (atalho no topo do menu). Mede a força c
 - **Dado:** grátis (Yahoo), atrasado e **sem lado agressor**. A força é estimada por volume × fechamento no candle (`forca-cesta.js`). Quando o feed real (MT5) entrar, troca-se só `forcaDoCandle`.
 - Regras em `forca-cesta.js` (função pura, com teste), rotas em `forca-rotas.js`: `GET /api/forca/estado`, `POST /api/forca/mesa`, `POST /api/forca/ativar`.
 
+## ◎ Jogo dos Pontos (17/11/2026)
+
+Página `/pontos.html` (link no topo do Super Power). Quanto o índice andou: desde a abertura, máxima, mínima, amplitude, gap, desde o fechamento anterior, por hora e contra a faixa média dos últimos pregões (termômetro). Gráfico do dia com as marcas (abertura, máxima, mínima, fechamento anterior, ±500 e ±1000 pontos) e **régua**: dois cliques medem a distância em pontos, ticks e reais.
+
+- **Regras do contrato** vêm do simulador B3 (`CONTRATOS.WIN`), fonte única: ponto R$ 0,20, tick 5 pts = R$ 1,00, garantia de day trade R$ 155 por contrato.
+- **Calculadora de contratos:** garantia presa, quantos contratos o capital permite, valor do ponto e do tick com N contratos.
+- **Simulador ao vivo:** compra e venda pelo Simulador B3 que já existe (garantia, stop obrigatório, 1 tick de deslize, zeragem). A posição mostra os pontos andando com o preço de referência.
+- Cálculo em `pontos-dia.js` (função pura, com teste); rota `GET /api/forca/pontos`. Referência: Ibovespa à vista (Yahoo), com atraso.
+
 ## Simulador B3: mini índice e mini dólar (07/10/2026)
 
 Treino de **WIN** e **WDO** com dinheiro simulado e a regra do contrato de verdade. Aba **◆ Simulador B3**, no grupo Laboratório.

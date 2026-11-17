@@ -13,6 +13,7 @@
 // conveniência; a recusa do servidor é a regra.
 // ============================================================
 const F = require('./forca-cesta');
+const P = require('./pontos-dia');
 
 const CACHE_MS = 30000;   // o dado grátis tem atraso; 30 s não perde nada
 const MESA_VALE_MS = 3 * 60000; // veredito da mesa vale 3 min, depois pede de novo
@@ -121,8 +122,28 @@ function criarRotasForca({ B3, cotacaoB3, ordemB3, chamarClaudeJson, json, body,
     return { ...ordem, motivo: ok.motivo, execucao: 'SIMULACAO' };
   }
 
+  // Jogo dos Pontos: quanto o índice andou + as regras do contrato, que vêm
+  // do simulador B3 (fonte única: CONTRATOS.WIN), nunca escritas de novo aqui.
+  async function pontos() {
+    const t = agora();
+    const cot = await cotacaoB3('WIN');
+    // O fechamentoAnterior do Yahoo com range=5d é o de ANTES dos 5 dias: não
+    // serve. O jogo usa o último candle do pregão anterior.
+    const jogo = P.jogoDosPontos(cot.candles, null);
+    const c = B3.CONTRATOS.WIN;
+    return {
+      ...jogo,
+      contrato: { codigo: 'WIN', valorPonto: c.valorPonto, tick: c.tick, valorTick: Math.round(c.valorPonto * c.tick * 100) / 100, margem: c.margem, referencia: c.referencia },
+      pregao: B3.pregao('WIN', t),
+      atrasado: true,
+      fonte: 'Referência: Ibovespa à vista pelo Yahoo, com atraso. A variação em pontos anda praticamente junto com o WIN; o número absoluto do WIN tem a diferença de juros (~0,3%). Ao vivo de verdade só com o feed da corretora (MT5).',
+      atualizadoEm: new Date(t).toISOString(),
+    };
+  }
+
   return async function rotasForca(req, res, pathname) {
     if (pathname === '/api/forca/estado' && req.method === 'GET') return json(res, 200, await estado());
+    if (pathname === '/api/forca/pontos' && req.method === 'GET') return json(res, 200, await pontos());
     if (pathname === '/api/forca/mesa' && req.method === 'POST') return json(res, 200, await mesa());
     if (pathname === '/api/forca/ativar' && req.method === 'POST') return json(res, 200, await ativar(await body(req)));
     return json(res, 404, { error: 'Endpoint não encontrado' });
